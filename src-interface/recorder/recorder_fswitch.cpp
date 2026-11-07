@@ -811,7 +811,9 @@ namespace satdump
     void FrequencySwitcher::plot_folded(ImVec2 size, bool main_area)
     {
         // mtx must be held
-        if (ImPlot::BeginPlot("##fswitch", size))
+        // Own mouse text: frequency once, velocity, value (ImPlot would show
+        // the frequency twice, once per X axis)
+        if (ImPlot::BeginPlot("##fswitch", size, ImPlotFlags_NoMouseText))
         {
             ImPlot::SetupAxes("Frequency (MHz)", use_db ? "(Psys+dP)/Psys (dB)" : "dP/Psys x1e-3", ImPlotAxisFlags_AutoFit, auto_y ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None);
             float lo = use_db ? y_min_db : y_min, hi = use_db ? y_max_db : y_max;
@@ -840,6 +842,17 @@ namespace satdump
             }
             if (plot_x.size() > 0)
                 ImPlot::PlotLine("folded", plot_x.data(), plot_y.data(), plot_x.size());
+            if (ImPlot::IsPlotHovered())
+            {
+                ImPlotPoint mp = ImPlot::GetPlotMousePos(ImAxis_X1, ImAxis_Y1);
+                char txt[128];
+                int n = snprintf(txt, sizeof(txt), "%.1f MHz", mp.x);
+                if (show_velocity && rest_mhz > 0)
+                    n += snprintf(txt + n, sizeof(txt) - n, "   %.1f km/s%s", 299792.458 * (rest_mhz - mp.x) / rest_mhz + lsr_corr, lsr ? " LSR" : "");
+                snprintf(txt + n, sizeof(txt) - n, use_db ? "   %.3f dB" : "   %.2f", mp.y);
+                ImVec2 pos = ImPlot::GetPlotPos(), sz = ImPlot::GetPlotSize(), ts = ImGui::CalcTextSize(txt);
+                ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + sz.x - ts.x - 8, pos.y + sz.y - ts.y - 6), ImGui::GetColorU32(ImGuiCol_Text), txt);
+            }
             // In the main area, deselecting "folded" in the legend stops switching
             if (main_area)
             {
