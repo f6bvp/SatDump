@@ -162,6 +162,9 @@ namespace satdump
         void start_fswitch(bool resume = false);
         // Why switching could not start or stopped (shown in the panel)
         std::string fswitch_error;
+        // Opening the Frequency switching section scrolls the panel to the bottom
+        bool fswitch_was_open = false;
+        int fswitch_scroll_frames = 0;
         bool source_is_remote();
         void stop_fswitch();
 

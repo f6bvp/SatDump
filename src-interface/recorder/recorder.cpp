@@ -472,6 +472,9 @@ namespace satdump
         }
 
         bool fswitch_open = ImGui::CollapsingHeader(_("Frequency switching (experimental)"));
+        if (fswitch_open && !fswitch_was_open)
+            fswitch_scroll_frames = 3; // a few frames: the panel height changes as sections hide
+        fswitch_was_open = fswitch_open;
         if (fswitch_open)
         {
             ImGui::TextWrapped("%s", _("For very stable signals only (radio astronomy), not for satellites. Recording, processing and tracking must be off."));
@@ -898,6 +901,12 @@ namespace satdump
         }
 
         eventBus->fire_event<RecorderDrawPanelEvent>({});
+
+        if (fswitch_scroll_frames > 0)
+        {
+            ImGui::SetScrollY(ImGui::GetScrollMaxY());
+            fswitch_scroll_frames--;
+        }
     }
 
     void RecorderApplication::drawContents(ImVec2 win_size)
