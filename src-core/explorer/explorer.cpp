@@ -5,6 +5,7 @@
 #include "core/plugin.h"
 #include "core/resources.h"
 #include "core/style.h"
+#include "satdump_vars.h"
 #include "handlers/dataset/flowgraph/processing_flowgraph_handler.h"
 #include "i18n.h"
 #include "image/image.h"
@@ -372,7 +373,7 @@ namespace satdump
                 if (satdump_logo_texture == 0)
                 {
                     image::Image img;
-                    image::load_png(img, resources::getResourcePath("icon.png"));
+                    image::load_png(img, satdump::getAppIconPath());
                     satdump_logo_texture = makeImageTexture();
                     uint32_t *px = new uint32_t[img.width() * img.height()];
                     image::image_to_rgba(img, px);
@@ -387,6 +388,10 @@ namespace satdump
                 std::string title = lego_debug_mode ?                                                                                                                //
                                         std::string{0x57, 0x65, 0x6c, 0x63, 0x6f, 0x6d, 0x65, 0x20, 0x74, 0x6f, 0x20, 0x42, 0x75, 0x67, 0x44, 0x75, 0x6d, 0x70, '?'} //
                                                     : _("Welcome to SatDump!");
+                // Derived application: same (translated) sentence, its own name
+                if (!lego_debug_mode && satdump::APP_NAME != "SatDump")
+                    for (size_t pos = title.find("SatDump"); pos != std::string::npos; pos = title.find("SatDump", pos + satdump::APP_NAME.size()))
+                        title.replace(pos, 7, satdump::APP_NAME);
 
                 {
                     ImGui::PushFont(style::bigFont);

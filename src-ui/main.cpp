@@ -220,6 +220,9 @@ int main(int argc, char *argv[])
     style::setFonts(backend::device_scale);
 
     // Init Loading Screen
+    // AstroDump: own name and logo on the loading and welcome screens
+    satdump::APP_NAME = "AstroDump";
+    satdump::APP_ICON = "icon_astrodump.png";
     std::shared_ptr<satdump::LoadingScreenSink> loading_screen_sink = std::make_shared<satdump::LoadingScreenSink>();
     logger->add_sink(loading_screen_sink);
 

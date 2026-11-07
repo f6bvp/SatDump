@@ -1,4 +1,5 @@
 #include "loader.h"
+#include "satdump_vars.h"
 #include "const.h"
 #include "core/backend.h"
 #include "core/resources.h"
@@ -26,12 +27,12 @@ namespace satdump
         std::mt19937 rng(dev());
         std::uniform_int_distribution<std::mt19937::result_type> check(1, 1000);
         loader_constant = ((timeConstant->tm_mon - 3) == 0 && (timeConstant->tm_mday - 1) == 0) ? (check(rng) != 42) : (check(rng) == 42);
-        title = loader_constant ? satdump::loader_constant_title : _("SatDump");
+        title = loader_constant ? satdump::loader_constant_title : (satdump::APP_NAME == "SatDump" ? _("SatDump") : satdump::APP_NAME);
         slogan = loader_constant ? satdump::loader_constant_slogan : _("General Purpose Satellite Data Processor");
         if (loader_constant)
             image::load_png(image, (uint8_t *)satdump::loader_constant_icon, sizeof(satdump::loader_constant_icon));
         else
-            image::load_png(image, resources::getResourcePath("icon.png"));
+            image::load_png(image, satdump::getAppIconPath());
 
         if (image.depth() != 8)
             image = image.to8bits();
