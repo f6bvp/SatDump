@@ -946,7 +946,9 @@ namespace satdump
         // mtx must be held
         // Own mouse text: frequency once, velocity, value (ImPlot would show
         // the frequency twice, once per X axis)
-        if (ImPlot::BeginPlot("##fswitch", size, ImPlotFlags_NoMouseText))
+        // Right click is ours (shows or hides the line window): no ImPlot
+        // context menu nor box selection, the frequency axis fits by itself
+        if (ImPlot::BeginPlot("##fswitch", size, ImPlotFlags_NoMouseText | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect))
         {
             ImPlot::SetupAxes("Frequency (MHz)", use_db ? "(Psys+dP)/Psys (dB)" : "dP/Psys x1e-3", ImPlotAxisFlags_AutoFit, auto_y ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None);
             float lo = use_db ? y_min_db : y_min, hi = use_db ? y_max_db : y_max;
@@ -975,7 +977,9 @@ namespace satdump
             }
             if (plot_x.size() > 0)
                 ImPlot::PlotLine("folded", plot_x.data(), plot_y.data(), plot_x.size());
-            if (bl_remove && plot_x.size() > 1 && rest_mhz > 0)
+            if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Right] < 25)
+                bl_show_lines = !bl_show_lines;
+            if (bl_remove && bl_show_lines && plot_x.size() > 1 && rest_mhz > 0)
             {
                 // Line window, draggable: the baseline is fitted outside it
                 double fa = mhz_of_velocity(bl_vmin), fb = mhz_of_velocity(bl_vmax);

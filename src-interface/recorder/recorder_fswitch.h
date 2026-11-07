@@ -89,6 +89,7 @@ namespace satdump
         bool bl_remove = false;
         int bl_order = 4;
         float bl_vmin = -150.0f, bl_vmax = 150.0f;
+        bool bl_show_lines = true; // the two lines of the window (right click on the plot toggles)
         double bl_rms = 0;  // residual outside the window (dP/Psys)
         int bl_points = 0;
         double mhz_of_velocity(double v) { return rest_mhz * (1 - (v - lsr_corr) / 299792.458); }

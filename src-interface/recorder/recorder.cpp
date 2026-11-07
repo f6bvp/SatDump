@@ -618,6 +618,9 @@ namespace satdump
             if (fswitch.bl_remove)
             {
                 ImGui::Indent();
+                ImGui::Checkbox(_("Show line window"), &fswitch.bl_show_lines);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", _("The two orange lines; a right click on the plot also shows or hides them"));
                 ImGui::SliderInt(_("Order"), &fswitch.bl_order, 0, 9);
                 ImGui::InputFloat(_("Line from (km/s)"), &fswitch.bl_vmin, 10, 50, "%.0f");
                 ImGui::InputFloat(_("Line to (km/s)"), &fswitch.bl_vmax, 10, 50, "%.0f");
