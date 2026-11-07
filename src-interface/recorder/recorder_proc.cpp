@@ -1,6 +1,7 @@
 #include "handlers/processing/processing.h"
 #include "init.h"
 #include "recorder.h"
+#include <cmath>
 
 #include "logger.h"
 #include "main_ui.h"
@@ -121,6 +122,9 @@ namespace satdump
         if (!is_started)
             return;
 
+        if (fswitch.is_running())
+            stop_fswitch();
+
         splitter->stop_tmp();
         if (current_decimation > 1)
             decim_ptr->stop();
@@ -174,6 +178,11 @@ namespace satdump
 
     void RecorderApplication::start_processing()
     {
+        if (fswitch.is_running())
+        {
+            error.set_message(style::theme.red, "Stop frequency switching before processing!");
+            return;
+        }
         if (pipeline_selector.outputdirselect.isValid() || automated_live_output_dir)
         {
             logger->trace("Start pipeline...");
@@ -236,6 +245,11 @@ namespace satdump
 
     void RecorderApplication::start_recording()
     {
+        if (fswitch.is_running())
+        {
+            error.set_message(style::theme.red, "Stop frequency switching before recording!");
+            return;
+        }
         splitter->set_enabled("record", true);
         load_rec_path_data();
         std::string filename = recording_path + prepareBasebandFileName(getTime(), get_samplerate(), frequency_hz);
@@ -406,6 +420,45 @@ namespace satdump
                         stop();
                 }
             };
+        }
+    }
+
+    void RecorderApplication::start_fswitch()
+    {
+        if (!is_started || fswitch.is_running())
+            return;
+
+        // Separate FFT on its own splitter output, without averaging:
+        // an average would mix both positions
+        splitter->reset_output("fswitch");
+        fswitch_fft = std::make_shared<dsp::FFTPanBlock>(splitter->get_output("fswitch"));
+        // About one FFT per fft_size samples: every sample is used once,
+        // at a much lower CPU cost than the display FFT
+        uint64_t sr = get_samplerate();
+        int rate = std::max<int>(1, (int)std::ceil((double)sr / fft_size));
+        double frame_dt = (double)(sr / rate) / sr; // as computed by FFTPanBlock
+        fswitch_fft->set_fft_settings(fft_size, sr, rate);
+        fswitch_fft->avg_num = 1;
+        int size = fft_size;
+        fswitch_fft->on_fft = [this, size](float *v) { fswitch.feed(v, size); };
+        fswitch_fft->start();
+        splitter->set_enabled("fswitch", true);
+
+        fswitch.offset_khz = fswitch.offset_pct / 100.0 * FrequencySwitcher::max_offset_hz(sr) / 1e3;
+        fswitch.start(frequency_hz, sr, fft_size, frame_dt, fft->output_stream->writeBuf);
+        fswitch.display_avg = fft->avg_num;
+        fft_plot->set_ptr(fswitch.display_buffer());
+    }
+
+    void RecorderApplication::stop_fswitch()
+    {
+        fswitch.stop(); // tunes back to the recorder frequency
+        fft_plot->set_ptr(fft->output_stream->writeBuf);
+        splitter->set_enabled("fswitch", false);
+        if (fswitch_fft)
+        {
+            fswitch_fft->stop();
+            fswitch_fft.reset();
         }
     }
 } // namespace satdump

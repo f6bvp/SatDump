@@ -128,6 +128,7 @@ namespace satdump
         splitter = std::make_shared<dsp::SplitterBlock>(source_ptr->output_stream);
         splitter->add_output("record");
         splitter->add_output("live");
+        splitter->add_output("fswitch");
 
         fft = std::make_shared<dsp::FFTPanBlock>(splitter->output_stream);
         fft->set_fft_settings(fft_size, get_samplerate(), fft_rate);
@@ -141,7 +142,14 @@ namespace satdump
         fft_plot->frequency = frequency_hz;
         waterfall_plot = std::make_shared<widgets::WaterfallPlot>(fft_sizes_lut[0], 500);
 
-        fft->on_fft = [this](float *v) { waterfall_plot->push_fft(v); };
+        fft->on_fft = [this](float *v)
+        {
+            // While switching, the waterfall is fed with recentred frames
+            if (!fswitch.is_running())
+                waterfall_plot->push_fft(v);
+        };
+        fswitch.on_display = [this](float *v) { waterfall_plot->push_fft(v); };
+        fswitch.set_sdr_frequency = [this](double f) { set_sdr_frequency(f); };
 
         // Load config
         auto cfg = db->get_user_json("recorder_state");
@@ -377,6 +385,8 @@ namespace satdump
                              "2048\0"
                              "1024\0"))
             {
+                if (fswitch.is_running())
+                    stop_fswitch();
                 fft_size = fft_sizes_lut[selected_fft_size];
 
                 fft->set_fft_settings(fft_size, get_samplerate(), fft_rate);
@@ -425,6 +435,7 @@ namespace satdump
             widgets::SteppedSliderFloat(_("FFT Max"), &fft_plot->scale_max, -160, 150);
             widgets::SteppedSliderFloat(_("FFT Min"), &fft_plot->scale_min, -160, 150);
             widgets::SteppedSliderFloat(_("Avg Num"), &fft->avg_num, 1, 500, 1);
+            fswitch.display_avg = fft->avg_num;
             if (ImGui::Combo(_("Palette"), &selected_waterfall_palette, waterfall_palettes_str.c_str()))
                 waterfall_plot->set_palette(waterfall_palettes[selected_waterfall_palette]);
             ImGui::Checkbox(_("Show Waterfall"), &show_waterfall);
@@ -445,6 +456,93 @@ namespace satdump
         {
             waterfall_plot->scale_min = fft_plot->scale_min;
             waterfall_plot->scale_max = fft_plot->scale_max;
+        }
+
+        if (ImGui::CollapsingHeader(_("Frequency switching (experimental)")))
+        {
+            ImGui::TextWrapped("%s", _("For very stable signals only (radio astronomy), not for satellites. Recording, processing and tracking must be off."));
+            bool running = fswitch.is_running();
+            if (running)
+                ImGui::BeginDisabled();
+            {
+                // Offset in % of the largest one allowed, shown in kHz too
+                double max_khz = FrequencySwitcher::max_offset_hz(get_samplerate()) / 1e3;
+                char fmt[64];
+                snprintf(fmt, sizeof(fmt), "%%.0f %%%% (%.0f kHz)", fswitch.offset_pct / 100.0 * max_khz);
+                widgets::SteppedSliderFloat(_("Offset (% of max)"), &fswitch.offset_pct, 5, 100, 1, fmt);
+                ImGui::TextDisabled("%s %.0f kHz", _("Max offset at this samplerate:"), max_khz);
+            }
+            ImGui::InputFloat(_("Dwell (s)"), &fswitch.dwell_s, 0.1f, 1.0f, "%.2f");
+            ImGui::InputFloat(_("Settle (s)"), &fswitch.settle_s, 0.05f, 0.5f, "%.2f");
+            ImGui::Checkbox(_("Measure delay"), &fswitch.auto_delay);
+            if (fswitch.auto_delay)
+                ImGui::BeginDisabled();
+            ImGui::InputFloat(_("Delay (s)"), &fswitch.delay_s, 0.05f, 0.5f, "%.2f");
+            if (fswitch.auto_delay)
+                ImGui::EndDisabled();
+            if (running)
+                ImGui::EndDisabled();
+
+            if (!running)
+            {
+                bool can_start = is_started && !is_recording && !is_processing && vfo_list.size() == 0;
+                if (!can_start)
+                    ImGui::BeginDisabled();
+                if (ImGui::Button(_("Start switching")))
+                    start_fswitch();
+                if (!can_start)
+                    ImGui::EndDisabled();
+            }
+            else if (ImGui::Button(_("Stop switching")))
+                stop_fswitch();
+            ImGui::SameLine();
+            if (ImGui::Button(_("Reset##fswitch")))
+            {
+                // Full restart: the delay is measured again from a clean pattern
+                if (fswitch.is_running())
+                {
+                    stop_fswitch();
+                    start_fswitch();
+                }
+                else
+                    fswitch.reset();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(_("Save CSV")))
+            {
+                load_rec_path_data();
+                std::string file = fswitch.save_csv(recording_path);
+                if (file.size())
+                    logger->info("Frequency switching result saved to " + file);
+                else
+                    logger->error("Frequency switching: nothing to save, or could not write in " + recording_path);
+            }
+
+            ImGui::SliderInt(_("Smoothing (bins)"), &fswitch.smoothing, 1, 256);
+            if (ImGui::RadioButton(_("Linear##fswitch"), !fswitch.use_db))
+                fswitch.use_db = false;
+            ImGui::SameLine();
+            if (ImGui::RadioButton(_("dB##fswitch"), fswitch.use_db))
+                fswitch.use_db = true;
+            ImGui::Checkbox(_("Auto Y scale"), &fswitch.auto_y);
+            if (fswitch.auto_y)
+                ImGui::BeginDisabled();
+            if (fswitch.use_db)
+            {
+                widgets::SteppedSliderFloat(_("Y Max (dB)"), &fswitch.y_max_db, -20, 20, 0.001, "%.3f", ImGuiSliderFlags_Logarithmic);
+                widgets::SteppedSliderFloat(_("Y Min (dB)"), &fswitch.y_min_db, -20, 20, 0.001, "%.3f", ImGuiSliderFlags_Logarithmic);
+            }
+            else
+            {
+                widgets::SteppedSliderFloat(_("Y Max (x1e-3)"), &fswitch.y_max, -1000, 1000, 0.01, "%.2f", ImGuiSliderFlags_Logarithmic);
+                widgets::SteppedSliderFloat(_("Y Min (x1e-3)"), &fswitch.y_min, -1000, 1000, 0.01, "%.2f", ImGuiSliderFlags_Logarithmic);
+            }
+            if (fswitch.auto_y)
+                ImGui::EndDisabled();
+            widgets::SteppedSliderFloat(_("Edge mask (dB)"), &fswitch.edge_db, 0.5, 20, 0.5);
+            ImGui::Checkbox(_("Show folded window after stop"), &fswitch.show_window);
+            ImGui::Checkbox(_("Show unfolded window (o1-o2, o2-o1)"), &fswitch.show_unfolded_window);
+            fswitch.draw_status();
         }
 
         if (ImGui::CollapsingHeader(_("Processing")))
@@ -699,6 +797,8 @@ namespace satdump
 
     void RecorderApplication::drawContents(ImVec2 win_size)
     {
+        fswitch.draw_window();
+
         float right_width = win_size.x;
         float wf_size = win_size.y;
         float left_width = ImGui::GetCursorPosX();
@@ -734,6 +834,15 @@ namespace satdump
 
         {
             ImGui::BeginChild("RecorderFFT", {right_width, wf_size}, false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            if (fswitch.is_running())
+            {
+                // While switching, the folded result replaces spectrum and waterfall
+                ImGui::SetCursorScreenPos(ImVec2(left_width + 8, 25 * ui_scale));
+                fswitch.draw_plot(ImVec2(right_width - 9 * ui_scale, wf_size - 8 * ui_scale));
+                if (fswitch.take_stop_request())
+                    stop_fswitch(); // back to the normal spectrum and acquisition
+            }
+            else
             {
                 // Fix for "could not allocate waterfall memory"
                 if (waterfall_ratio > 0.9)

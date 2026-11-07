@@ -21,6 +21,7 @@
 #include "pipeline/live_pipeline.h"
 
 #include "tracking/tracking_widget.h"
+#include "recorder_fswitch.h"
 
 namespace satdump
 {
@@ -153,6 +154,13 @@ namespace satdump
         // Debug
         widgets::ConstellationViewer *constellation_debug = nullptr;
 
+        // Experimental frequency switching
+        FrequencySwitcher fswitch;
+        // Own FFT without averaging, so the display keeps its own settings
+        std::shared_ptr<dsp::FFTPanBlock> fswitch_fft;
+        void start_fswitch();
+        void stop_fswitch();
+
     private: // VFO Stuff
         struct VFOInfo
         {
@@ -201,15 +209,27 @@ namespace satdump
                 return current_samplerate;
         }
 
-        void set_frequency(uint64_t freq_hz)
+        // Applies the xconverter and tunes the SDR, nothing else
+        double set_sdr_frequency(double freq_hz)
         {
-            double xconv_freq = frequency_hz = freq_hz;
+            double xconv_freq = freq_hz;
             if (xconv_freq > xconverter_frequency * 1e6)
                 xconv_freq -= xconverter_frequency * 1e6;
             else
                 xconv_freq = xconverter_frequency * 1e6 - xconv_freq;
 
             source_ptr->set_frequency(xconv_freq);
+            return xconv_freq;
+        }
+
+        void set_frequency(uint64_t freq_hz)
+        {
+            // A new frequency ends frequency switching
+            if (fswitch.is_running())
+                stop_fswitch();
+
+            frequency_hz = freq_hz;
+            double xconv_freq = set_sdr_frequency(freq_hz);
             if (fft_plot)
             {
                 fft_plot->frequency = freq_hz;
