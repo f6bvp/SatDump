@@ -1,6 +1,7 @@
 #define SATDUMP_DLL_EXPORT 1
 #include "satdump_vars.h"
 #include <cstdio>
+#include <filesystem>
 
 #if defined(__APPLE__)
 #include <filesystem>
@@ -83,12 +84,11 @@ namespace satdump
 
     std::string getAppIconPath()
     {
-        std::string p = RESPATH + APP_ICON;
-        FILE *f = fopen(p.c_str(), "rb");
-        if (f == nullptr)
-            return RESPATH + "icon.png";
-        fclose(f);
-        return p;
+        // Same place as resources::getResourcePath()
+        std::string base = std::filesystem::exists("resources") ? "resources/" : RESPATH + "resources/";
+        if (std::filesystem::exists(base + APP_ICON))
+            return base + APP_ICON;
+        return base + "icon.png";
     }
 
     std::string getSatDumpVersionName() { return "SatDump v" + (std::string)SATDUMP_VERSION + (satdump::SATDUMP_VERSION_TAG.size() ? " (" + satdump::SATDUMP_VERSION_TAG + ")" : ""); }
