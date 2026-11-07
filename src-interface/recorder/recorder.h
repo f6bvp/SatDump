@@ -158,7 +158,7 @@ namespace satdump
         FrequencySwitcher fswitch;
         // Own FFT without averaging, so the display keeps its own settings
         std::shared_ptr<dsp::FFTPanBlock> fswitch_fft;
-        void start_fswitch();
+        void start_fswitch(bool force_local = false);
         void stop_fswitch();
 
     private: // VFO Stuff
@@ -209,15 +209,21 @@ namespace satdump
                 return current_samplerate;
         }
 
-        // Applies the xconverter and tunes the SDR, nothing else
-        double set_sdr_frequency(double freq_hz)
+        // SDR frequency for a sky frequency (xconverter), without tuning
+        double sdr_freq_of(double freq_hz)
         {
             double xconv_freq = freq_hz;
             if (xconv_freq > xconverter_frequency * 1e6)
                 xconv_freq -= xconverter_frequency * 1e6;
             else
                 xconv_freq = xconverter_frequency * 1e6 - xconv_freq;
+            return xconv_freq;
+        }
 
+        // Applies the xconverter and tunes the SDR, nothing else
+        double set_sdr_frequency(double freq_hz)
+        {
+            double xconv_freq = sdr_freq_of(freq_hz);
             source_ptr->set_frequency(xconv_freq);
             return xconv_freq;
         }

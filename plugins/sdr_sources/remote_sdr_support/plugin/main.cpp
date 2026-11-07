@@ -110,6 +110,19 @@ public:
     {
         satdump::eventBus->register_handler<dsp::RegisterDSPSampleSourcesEvent>(registerSources);
         satdump::eventBus->register_handler<satdump::config::RegisterPluginConfigHandlersEvent>(registerConfigHandler);
+        // Frequency switching done by the server, asked by the recorder
+        satdump::eventBus->register_handler<dsp::remote_fswitch::StartEvent>([](dsp::remote_fswitch::StartEvent evt)
+                                                                            {
+            RemoteSource *r = dynamic_cast<RemoteSource *>(evt.source);
+            if (r == nullptr)
+                return;
+            r->fswitch_start(evt.settings, evt.callbacks);
+            *evt.accepted = true; });
+        satdump::eventBus->register_handler<dsp::remote_fswitch::StopEvent>([](dsp::remote_fswitch::StopEvent evt)
+                                                                           {
+            RemoteSource *r = dynamic_cast<RemoteSource *>(evt.source);
+            if (r != nullptr)
+                r->fswitch_stop(); });
         for (auto &server : satdump::satdump_cfg.main_cfg["plugin_settings"]["remote_sdr_support"])
             additional_servers.push_back({server["ip"], server["port"]});
     }

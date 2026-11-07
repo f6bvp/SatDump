@@ -70,6 +70,12 @@ namespace dsp
             PKT_TYPE_GETSETTINGS,
             PKT_TYPE_SAMPLERATESET,
             PKT_TYPE_BITDEPTHSET,
+            // Frequency switching done by the server (added at the end, so
+            // the older types keep their numbers; an older server ignores them)
+            PKT_TYPE_FSWITCH_START,  // client -> server, CBOR settings
+            PKT_TYPE_FSWITCH_STOP,   // client -> server
+            PKT_TYPE_FSWITCH_STATUS, // server -> client, CBOR status
+            PKT_TYPE_FSWITCH_DWELL,  // server -> client, mean spectrum of one dwell
         };
 
         template <typename T>

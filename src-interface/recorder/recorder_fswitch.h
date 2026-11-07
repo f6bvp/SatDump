@@ -24,11 +24,14 @@
  */
 
 #include "imgui/imgui.h"
+#include "common/dsp_source_sink/remote_fswitch.h"
+#include "nlohmann/json.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -53,6 +56,11 @@ namespace satdump
         bool auto_delay = true;
         float delay_s = 0.0f;
 
+        // One folded spectrum per cycle (A then B) written to a CSV file in
+        // cycles_dir, for post-processing. Set before start
+        bool save_cycles = false;
+        std::string cycles_dir;
+
         // Display
         int smoothing = 1;
         bool show_window = true;          // folded result
@@ -70,6 +78,19 @@ namespace satdump
         // Tunes the SDR without changing the recorder frequency
         std::function<void(double)> set_sdr_frequency = [](double) {};
 
+        // Switching done by the SDR server (remote source only). The server
+        // knows which samples come after each retune: no delay to measure,
+        // and only one mean spectrum per dwell crosses the network.
+        bool on_server = true;
+        bool save_iq_on_server = false;
+        int iq_bits = 16; // 8, 16 or 32 (float)
+        // Sky frequency -> SDR frequency (xconverter), without tuning
+        std::function<double(double)> sdr_freq_of = [](double f) { return f; };
+        // Asks the source to switch by itself; false if it cannot
+        std::function<bool(nlohmann::json, std::shared_ptr<dsp::remote_fswitch::Callbacks>)> remote_start =
+            [](nlohmann::json, std::shared_ptr<dsp::remote_fswitch::Callbacks>) { return false; };
+        std::function<void()> remote_stop = []() {};
+
         // Main display while switching: each frame is moved back to the sky
         // frequency (by -/+ the offset) then averaged like the normal FFT
         float display_avg = 10;
@@ -77,12 +98,25 @@ namespace satdump
         float *display_buffer() { return disp.data(); }
 
     public:
-        ~FrequencySwitcher() { stop(); }
+        // In server mode, do not talk to the source here: it may be gone
+        ~FrequencySwitcher()
+        {
+            if (remote)
+                running = false;
+            else
+                stop();
+        }
 
         // frame_dt: duration of signal used by one FFT frame (seconds)
         // init_display: spectrum shown when switching starts (dB, fft_size values), may be null
         void start(double center_hz, double samplerate, int fft_size, double frame_dt, const float *init_display = nullptr);
+        // Same, done by the server. False if the source cannot do it
+        bool start_remote(double center_hz, double samplerate, int fft_size, const float *init_display = nullptr);
         void stop();
+        bool is_remote() { return remote; }
+        // True once when the server refused or did not answer: the recorder
+        // then switches locally. Call from the UI thread
+        bool take_fallback(std::string &why);
         void reset();
         bool is_running() { return running; }
 
@@ -102,8 +136,31 @@ namespace satdump
 
         // Saves the result as CSV in the given directory, returns the file name
         std::string save_csv(std::string directory);
+        // File of the folded cycles (empty if none)
+        std::string cycles_file()
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            return cyc_path;
+        }
 
     private:
+        // Server mode
+        bool remote = false;
+        // Callbacks hold a weak copy: they do nothing once this object is
+        // gone, and a late packet of an earlier run is ignored (generation)
+        std::shared_ptr<int> alive_token = std::make_shared<int>(0);
+        std::atomic<uint64_t> remote_gen{0};
+        bool remote_status_seen = false;
+        double remote_t_start = 0;
+        std::atomic<bool> fallback_requested{false};
+        std::string fallback_why;
+        std::string remote_iq_file, remote_iq_error;
+        uint64_t remote_iq_bytes = 0;
+        uint64_t remote_dwells = 0;
+        void on_remote_status(nlohmann::json st);
+        void on_remote_dwell(int phase, int frames, uint64_t index, const float *mean, int n);
+        void init_run(double center_hz, double sr, int fft_size, const float *init_display);
+
         void run();
         void compute();
         int phase_of(double fstart, double fend, double delay);
@@ -160,8 +217,22 @@ namespace satdump
 
         // Accumulators (linear power)
         std::vector<double> sum_a, sum_b;
+        std::vector<double> lin_tmp;
         uint64_t n_a = 0, n_b = 0;
         uint64_t cycles = 0;
+
+        // Per cycle folding, saved to cyc_file
+        std::ofstream cyc_file;
+        std::string cyc_path, cyc_error;
+        std::vector<double> cyc_a, cyc_b;
+        uint64_t cyc_na = 0, cyc_nb = 0, cyc_count = 0;
+        int cyc_last_ph = -1;
+        void open_cycles();
+        void close_cycles();
+        // Adds `weight` frames of linear power (mean) to the current cycle;
+        // a new A after a B closes the previous cycle
+        void cycle_add(int ph, const float *lin_f, const double *lin_d, double weight);
+        void write_cycle();
 
         // Computed for display
         std::vector<double> plot_x, plot_y;
@@ -178,5 +249,7 @@ namespace satdump
         // Recentred averages of each position, linear power (0 = no data)
         std::vector<float> disp_a, disp_b;
         void update_display(const float *db, int ph);
+        // Same with a linear spectrum, mixed with weight r
+        void update_display_lin(const float *lin, int ph, float r);
     };
 } // namespace satdump

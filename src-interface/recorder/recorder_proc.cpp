@@ -423,10 +423,32 @@ namespace satdump
         }
     }
 
-    void RecorderApplication::start_fswitch()
+    void RecorderApplication::start_fswitch(bool force_local)
     {
         if (!is_started || fswitch.is_running())
             return;
+
+        uint64_t sr = get_samplerate();
+        if (fswitch.save_cycles)
+        {
+            load_rec_path_data();
+            fswitch.cycles_dir = recording_path;
+        }
+        fswitch.offset_khz = fswitch.offset_pct / 100.0 * FrequencySwitcher::max_offset_hz(sr) / 1e3;
+
+        // Remote SDR: let the server switch. Its samples are not decimated,
+        // so only without decimation
+        if (!force_local && fswitch.on_server && current_decimation <= 1)
+        {
+            if (fswitch.start_remote(frequency_hz, sr, fft_size, fft->output_stream->writeBuf))
+            {
+                fswitch.display_avg = fft->avg_num;
+                fft_plot->set_ptr(fswitch.display_buffer());
+                return;
+            }
+        }
+        else if (!force_local && fswitch.on_server)
+            logger->info("Frequency switching: decimation is on, switching locally");
 
         // Separate FFT on its own splitter output, without averaging:
         // an average would mix both positions
@@ -434,7 +456,6 @@ namespace satdump
         fswitch_fft = std::make_shared<dsp::FFTPanBlock>(splitter->get_output("fswitch"));
         // About one FFT per fft_size samples: every sample is used once,
         // at a much lower CPU cost than the display FFT
-        uint64_t sr = get_samplerate();
         int rate = std::max<int>(1, (int)std::ceil((double)sr / fft_size));
         double frame_dt = (double)(sr / rate) / sr; // as computed by FFTPanBlock
         fswitch_fft->set_fft_settings(fft_size, sr, rate);
@@ -444,7 +465,6 @@ namespace satdump
         fswitch_fft->start();
         splitter->set_enabled("fswitch", true);
 
-        fswitch.offset_khz = fswitch.offset_pct / 100.0 * FrequencySwitcher::max_offset_hz(sr) / 1e3;
         fswitch.start(frequency_hz, sr, fft_size, frame_dt, fft->output_stream->writeBuf);
         fswitch.display_avg = fft->avg_num;
         fft_plot->set_ptr(fswitch.display_buffer());
@@ -452,7 +472,7 @@ namespace satdump
 
     void RecorderApplication::stop_fswitch()
     {
-        fswitch.stop(); // tunes back to the recorder frequency
+        fswitch.stop(); // tunes back to the recorder frequency (the server does it in server mode)
         fft_plot->set_ptr(fft->output_stream->writeBuf);
         splitter->set_enabled("fswitch", false);
         if (fswitch_fft)

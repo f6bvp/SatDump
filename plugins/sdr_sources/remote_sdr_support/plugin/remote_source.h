@@ -13,6 +13,8 @@
 #include "common/rimgui.h"
 
 #include "iq_pkt.h"
+#include "fswitch_proto.h"
+#include "common/dsp_source_sink/remote_fswitch.h"
 
 class RemoteSource : public dsp::DSPSampleSource
 {
@@ -43,7 +45,27 @@ protected:
     float current_datarate = 0;
     float current_samplerate = 0;
 
+    // Frequency switching done by the server (see remote_fswitch.h)
+    std::mutex fswitch_mtx;
+    std::shared_ptr<dsp::remote_fswitch::Callbacks> fswitch_cb;
+
 public:
+    void fswitch_start(nlohmann::json settings, std::shared_ptr<dsp::remote_fswitch::Callbacks> cb)
+    {
+        {
+            std::lock_guard<std::mutex> lk(fswitch_mtx);
+            fswitch_cb = cb;
+        }
+        sendPacketWithVector(tcp_client, dsp::remote::PKT_TYPE_FSWITCH_START, nlohmann::json::to_cbor(settings));
+    }
+
+    void fswitch_stop()
+    {
+        sendPacketWithVector(tcp_client, dsp::remote::PKT_TYPE_FSWITCH_STOP);
+        // The last status may still arrive: keep the callbacks until the
+        // recorder starts again (it ignores them when not running)
+    }
+
     RemoteSource(dsp::SourceDescriptor source)
         : DSPSampleSource(source)
     {
@@ -99,6 +121,33 @@ public:
             output_stream->swap(nsamples);
             bytes_received += len;
             samples_received += nsamples;
+        }
+
+        if (pkt_type == dsp::remote::PKT_TYPE_FSWITCH_STATUS || pkt_type == dsp::remote::PKT_TYPE_FSWITCH_DWELL)
+        {
+            std::shared_ptr<dsp::remote_fswitch::Callbacks> cb;
+            {
+                std::lock_guard<std::mutex> lk(fswitch_mtx);
+                cb = fswitch_cb;
+            }
+            if (cb)
+            {
+                try
+                {
+                    if (pkt_type == dsp::remote::PKT_TYPE_FSWITCH_STATUS)
+                        cb->on_status(nlohmann::json::from_cbor(std::vector<uint8_t>(&buffer[1], &buffer[len])));
+                    else
+                    {
+                        remote_sdr::FSwitchDwell d;
+                        if (remote_sdr::decode_fswitch_dwell(&buffer[1], len - 1, d))
+                            cb->on_dwell(d.phase, d.frames, d.dwell_index, d.mean.data(), d.mean.size());
+                    }
+                }
+                catch (std::exception &e)
+                {
+                    logger->error("Frequency switching: bad packet from the server : %s", e.what());
+                }
+            }
         }
 
         if (pkt_type == dsp::remote::PKT_TYPE_GETSETTINGS)

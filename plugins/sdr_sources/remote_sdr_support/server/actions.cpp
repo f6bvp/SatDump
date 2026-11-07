@@ -1,6 +1,7 @@
 #include "actions.h"
 #include "main.h"
 #include "streaming.h"
+#include "fswitch.h"
 
 // The source calls below (start, stop, close...) may throw, for instance when
 // the device cannot be claimed because another program is using it. Scoped
@@ -9,6 +10,8 @@
 
 void action_sourceStop()
 {
+    // No more samples: end the switching (and its IQ file) first
+    server_fswitch.stop("source stopped", false);
     std::lock_guard<std::mutex> lock(source_mtx);
     if (source_is_started)
     {

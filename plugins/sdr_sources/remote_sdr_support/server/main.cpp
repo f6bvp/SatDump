@@ -21,6 +21,8 @@
 #include "actions.h"
 #include "pkt_handler.h"
 #include "satdump_vars.h"
+#include "fswitch.h"
+#include <cstdlib>
 
 // The TCP Server
 TCPServer *tcp_server;
@@ -50,12 +52,21 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Where the frequency switching writes its IQ files
+    if (argc > 2)
+        server_fswitch.iq_dir = argv[2];
+    else if (getenv("SATDUMP_FSWITCH_DIR") != nullptr)
+        server_fswitch.iq_dir = getenv("SATDUMP_FSWITCH_DIR");
+    else
+        server_fswitch.iq_dir = std::string(getenv("HOME") != nullptr ? getenv("HOME") : ".") + "/satdump_fswitch";
+
     // We don't wanna spam with init this time around
     logger->set_level(slog::LOG_OFF);
     satdump::tle_do_update_on_init = false;
     satdump::initSatDump();
     completeLoggerInit();
     logger->set_level(slog::LOG_TRACE);
+    logger->info("Frequency switching IQ files go to " + server_fswitch.iq_dir);
 
     dsp::registerAllSources();
     // dsp::registerAllSinks();
@@ -78,6 +89,9 @@ int main(int argc, char *argv[])
 
     // Start source IQ loop
     std::thread source_iq_th(sourceStreamThread);
+
+    // Start the retune loop of the frequency switching
+    std::thread source_retune_th(sourceRetuneThread);
 
     while (1)
         tcp_server->wait_client();

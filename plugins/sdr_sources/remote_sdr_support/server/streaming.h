@@ -8,3 +8,4 @@ extern bool source_should_stream;
 extern std::atomic<int> streaming_bit_depth;
 
 void sourceStreamThread();
+void sourceRetuneThread();

@@ -150,6 +150,19 @@ namespace satdump
         };
         fswitch.on_display = [this](float *v) { waterfall_plot->push_fft(v); };
         fswitch.set_sdr_frequency = [this](double f) { set_sdr_frequency(f); };
+        fswitch.sdr_freq_of = [this](double f) { return sdr_freq_of(f); };
+        fswitch.remote_start = [this](nlohmann::json settings, std::shared_ptr<dsp::remote_fswitch::Callbacks> cb)
+        {
+            bool accepted = false;
+            if (source_ptr)
+                eventBus->fire_event<dsp::remote_fswitch::StartEvent>({source_ptr.get(), settings, cb, &accepted});
+            return accepted;
+        };
+        fswitch.remote_stop = [this]()
+        {
+            if (source_ptr)
+                eventBus->fire_event<dsp::remote_fswitch::StopEvent>({source_ptr.get()});
+        };
 
         // Load config
         auto cfg = db->get_user_json("recorder_state");
@@ -474,6 +487,27 @@ namespace satdump
             }
             ImGui::InputFloat(_("Dwell (s)"), &fswitch.dwell_s, 0.1f, 1.0f, "%.2f");
             ImGui::InputFloat(_("Settle (s)"), &fswitch.settle_s, 0.05f, 0.5f, "%.2f");
+            // Remote SDR: the server switches by itself (exact timing, no IQ on
+            // the network). Falls back to local switching if it cannot.
+            ImGui::Checkbox(_("Switch on the server (remote SDR)"), &fswitch.on_server);
+            if (fswitch.on_server)
+            {
+                ImGui::Indent();
+                ImGui::Checkbox(_("Save IQ on the server"), &fswitch.save_iq_on_server);
+                if (fswitch.save_iq_on_server)
+                {
+                    int bits_sel = fswitch.iq_bits == 8 ? 0 : fswitch.iq_bits == 32 ? 2 : 1;
+                    if (ImGui::Combo(_("IQ format##fswitch"), &bits_sel, "8 bits (cs8)\0" "16 bits (cs16)\0" "32 bits float (cf32)\0"))
+                        fswitch.iq_bits = bits_sel == 0 ? 8 : bits_sel == 2 ? 32 : 16;
+                    double gb_h = get_samplerate() * 2.0 * (fswitch.iq_bits / 8) * 3600 / 1e9;
+                    ImGui::TextDisabled("%s %.0f GB/h", _("About"), gb_h);
+                }
+                ImGui::Unindent();
+            }
+            ImGui::Checkbox(_("Save each folded cycle (CSV, recording folder)"), &fswitch.save_cycles);
+            bool local_only = !fswitch.on_server;
+            if (!local_only)
+                ImGui::TextDisabled("%s", _("Delay: not needed on the server (used if switching locally)"));
             ImGui::Checkbox(_("Measure delay"), &fswitch.auto_delay);
             if (fswitch.auto_delay)
                 ImGui::BeginDisabled();
@@ -841,6 +875,13 @@ namespace satdump
                 fswitch.draw_plot(ImVec2(right_width - 9 * ui_scale, wf_size - 8 * ui_scale));
                 if (fswitch.take_stop_request())
                     stop_fswitch(); // back to the normal spectrum and acquisition
+                std::string why;
+                if (fswitch.take_fallback(why))
+                {
+                    logger->warn("Frequency switching on the server not possible (%s): switching locally", why.c_str());
+                    stop_fswitch();
+                    start_fswitch(true);
+                }
             }
             else
             {

@@ -5,6 +5,7 @@
 #include "remote.h"
 #include "actions.h"
 #include "streaming.h"
+#include "fswitch.h"
 
 std::vector<dsp::SourceDescriptor> sources;
 
@@ -90,7 +91,11 @@ void tcp_rx_handler(uint8_t *buffer, int len)
 
         if (pkt_type == dsp::remote::PKT_TYPE_SETFREQ)
         {
+            // The client tunes by itself: switching is over
+            if (server_fswitch.active())
+                sendPacketWithVector(tcp_server, dsp::remote::PKT_TYPE_FSWITCH_STATUS, nlohmann::json::to_cbor(server_fswitch.stop("frequency set by the client", false)));
             std::lock_guard<std::mutex> lock(source_mtx);
+            server_fswitch.cancel_retune();
             double freq;
             memcpy(&freq, &buffer[1], sizeof(double));
             logger->debug("Frequency sent %f", freq);
@@ -131,6 +136,24 @@ void tcp_rx_handler(uint8_t *buffer, int len)
             *((uint64_t*)&pkt[0]) = last_samplerate;
             sendPacketWithVector(tcp_server, dsp::remote::PKT_TYPE_SAMPLERATEFBK, pkt);
         }
+
+        if (pkt_type == dsp::remote::PKT_TYPE_FSWITCH_START)
+        {
+            auto settings = nlohmann::json::from_cbor(std::vector<uint8_t>(&buffer[1], &buffer[len]));
+            uint64_t sr = 0;
+            bool started = false;
+            {
+                std::lock_guard<std::mutex> lock(source_mtx);
+                started = source_is_open && source_is_started && current_sample_source;
+                if (started)
+                    sr = current_sample_source->get_samplerate();
+            }
+            logger->debug("Frequency switching requested");
+            sendPacketWithVector(tcp_server, dsp::remote::PKT_TYPE_FSWITCH_STATUS, nlohmann::json::to_cbor(server_fswitch.start(settings, sr, started)));
+        }
+
+        if (pkt_type == dsp::remote::PKT_TYPE_FSWITCH_STOP)
+            sendPacketWithVector(tcp_server, dsp::remote::PKT_TYPE_FSWITCH_STATUS, nlohmann::json::to_cbor(server_fswitch.stop()));
 
         if (pkt_type == dsp::remote::PKT_TYPE_BITDEPTHSET)
         {
