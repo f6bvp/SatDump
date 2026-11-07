@@ -488,9 +488,8 @@ namespace satdump
             ImGui::InputFloat(_("Dwell (s)"), &fswitch.dwell_s, 0.1f, 1.0f, "%.2f");
             ImGui::InputFloat(_("Settle (s)"), &fswitch.settle_s, 0.05f, 0.5f, "%.2f");
             // Remote SDR: the server switches by itself (exact timing, no IQ on
-            // the network). Falls back to local switching if it cannot.
-            ImGui::Checkbox(_("Switch on the server (remote SDR)"), &fswitch.on_server);
-            if (fswitch.on_server)
+            // the network)
+            if (source_is_remote())
             {
                 ImGui::Indent();
                 ImGui::Checkbox(_("Save IQ on the server"), &fswitch.save_iq_on_server);
@@ -505,15 +504,6 @@ namespace satdump
                 ImGui::Unindent();
             }
             ImGui::Checkbox(_("Save each folded cycle (CSV, recording folder)"), &fswitch.save_cycles);
-            bool local_only = !fswitch.on_server;
-            if (!local_only)
-                ImGui::TextDisabled("%s", _("Delay: not needed on the server (used if switching locally)"));
-            ImGui::Checkbox(_("Measure delay"), &fswitch.auto_delay);
-            if (fswitch.auto_delay)
-                ImGui::BeginDisabled();
-            ImGui::InputFloat(_("Delay (s)"), &fswitch.delay_s, 0.05f, 0.5f, "%.2f");
-            if (fswitch.auto_delay)
-                ImGui::EndDisabled();
             if (running)
                 ImGui::EndDisabled();
 
@@ -534,7 +524,7 @@ namespace satdump
                 if (!can_resume)
                     ImGui::BeginDisabled();
                 if (ImGui::Button(_("Resume switching")))
-                    start_fswitch(false, true);
+                    start_fswitch(true);
                 if (!can_resume)
                     ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -602,6 +592,8 @@ namespace satdump
             }
             ImGui::Checkbox(_("Show folded window after stop"), &fswitch.show_window);
             ImGui::Checkbox(_("Show unfolded window (o1-o2, o2-o1)"), &fswitch.show_unfolded_window);
+            if (fswitch_error.size())
+                ImGui::TextColored(ImVec4(1, 0.3, 0.3, 1), "%s", fswitch_error.c_str());
             fswitch.draw_status();
         }
 
@@ -904,9 +896,9 @@ namespace satdump
                 std::string why;
                 if (fswitch.take_fallback(why))
                 {
-                    logger->warn("Frequency switching on the server not possible (%s): switching locally", why.c_str());
                     stop_fswitch();
-                    start_fswitch(true, true); // keeps what a resumed run had
+                    fswitch_error = "Switching on the server not possible: " + why;
+                    logger->error("Frequency switching: " + fswitch_error);
                 }
             }
             else

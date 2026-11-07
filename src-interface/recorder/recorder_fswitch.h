@@ -51,10 +51,6 @@ namespace satdump
         static double max_offset_hz(double samplerate) { return 0.3 * samplerate; }
         float dwell_s = 2.0f;
         float settle_s = 0.5f;
-        // Delay between a retune and its samples (server, network, buffers).
-        // Measured during the first cycles when auto_delay is on.
-        bool auto_delay = true;
-        float delay_s = 0.0f;
 
         // One folded spectrum per cycle (A then B) written to a CSV file in
         // cycles_dir, for post-processing. Set before start
@@ -89,10 +85,10 @@ namespace satdump
         // Tunes the SDR without changing the recorder frequency
         std::function<void(double)> set_sdr_frequency = [](double) {};
 
-        // Switching done by the SDR server (remote source only). The server
-        // knows which samples come after each retune: no delay to measure,
-        // and only one mean spectrum per dwell crosses the network.
-        bool on_server = true;
+        // With a remote SDR the server switches (start_remote): it knows
+        // which samples come after each retune, and only one mean spectrum
+        // per dwell crosses the network. A local SDR is switched here; its
+        // samples arrive within Settle after a retune.
         bool save_iq_on_server = false;
         int iq_bits = 16; // 8, 16 or 32 (float)
         // Sky frequency -> SDR frequency (xconverter), without tuning
@@ -182,11 +178,6 @@ namespace satdump
         void run();
         void compute();
         int phase_of(double fstart, double fend, double delay);
-        // Best delay in [lo, hi), returns false if no data. contrast = best / mean score
-        bool search_delay(double lo, double hi, double &best_d, double &contrast);
-        void estimate_delay();
-        void track_delay();
-        void add_slot(const float *db, double fstart, double fend);
 
         std::mutex mtx;
         std::atomic<bool> running{false};
@@ -200,14 +191,13 @@ namespace satdump
         int nbins = 0;
         int dk = 0;
         double delta_eff = 0;
-        double run_dwell = 0, run_settle = 0, run_delay = 0;
+        double run_dwell = 0, run_settle = 0;
 
         // Retune events: time (s) and phase (0 = f0 + D (A), 1 = f0 - D (B), -1 = back to f0)
         std::deque<std::pair<double, int>> events;
 
         // Frames are dated by their arrival time: samples lost on the way
-        // (server, network) do not shift the dates. The delay between a
-        // retune and the arrival of its samples is measured, then tracked.
+        // do not shift the dates.
         double frame_dt = 0;
         double t_first = 0;
         uint64_t n_frames = 0;
@@ -216,22 +206,6 @@ namespace satdump
         // Sliding measurement over the last seconds: (arrival time, frame count)
         std::deque<std::pair<double, uint64_t>> rate_hist;
         double speed_now = 1;
-
-        // Delay measurement: short slots of decimated spectra
-        struct Slot
-        {
-            double t_start, t_end;
-            std::vector<double> sum;
-            int count = 0;
-        };
-        static const int CAL_CHANNELS = 256;
-        static const int CAL_CYCLES = 3;
-        static const int TRACK_CYCLES = 4;
-        bool calibrating = false;
-        double slot_len = 0.05;
-        std::vector<Slot> slots;
-        double measured_delay = -1;
-        double delay_score_ratio = 0;
 
         // Accumulators (linear power)
         std::vector<double> sum_a, sum_b;

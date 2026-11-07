@@ -423,10 +423,16 @@ namespace satdump
         }
     }
 
-    void RecorderApplication::start_fswitch(bool force_local, bool resume)
+    bool RecorderApplication::source_is_remote()
+    {
+        return sdr_select_id >= 0 && sdr_select_id < (int)sources.size() && sources[sdr_select_id].source_type == "remote";
+    }
+
+    void RecorderApplication::start_fswitch(bool resume)
     {
         if (!is_started || fswitch.is_running())
             return;
+        fswitch_error.clear();
 
         uint64_t sr = get_samplerate();
         if (fswitch.save_cycles)
@@ -436,19 +442,23 @@ namespace satdump
         }
         fswitch.offset_khz = fswitch.offset_pct / 100.0 * FrequencySwitcher::max_offset_hz(sr) / 1e3;
 
-        // Remote SDR: let the server switch. Its samples are not decimated,
-        // so only without decimation
-        if (!force_local && fswitch.on_server && current_decimation <= 1)
+        // Remote SDR: the server switches. Switching here would need the
+        // network delay, which is not measured: no local fallback
+        if (source_is_remote())
         {
-            if (fswitch.start_remote(frequency_hz, sr, fft_size, fft->output_stream->writeBuf, resume))
+            if (current_decimation > 1)
+                fswitch_error = "Remote SDR: set Decimation to 1 (the server switches on undecimated samples)";
+            else if (fswitch.start_remote(frequency_hz, sr, fft_size, fft->output_stream->writeBuf, resume))
             {
                 fswitch.display_avg = fft->avg_num;
                 fft_plot->set_ptr(fswitch.display_buffer());
                 return;
             }
+            else
+                fswitch_error = "This SDR server cannot switch frequency";
+            logger->error("Frequency switching: " + fswitch_error);
+            return;
         }
-        else if (!force_local && fswitch.on_server)
-            logger->info("Frequency switching: decimation is on, switching locally");
 
         // Separate FFT on its own splitter output, without averaging:
         // an average would mix both positions

@@ -159,7 +159,10 @@ namespace satdump
         // Own FFT without averaging, so the display keeps its own settings
         std::shared_ptr<dsp::FFTPanBlock> fswitch_fft;
         // resume: continue the averages of the previous run if the settings allow it
-        void start_fswitch(bool force_local = false, bool resume = false);
+        void start_fswitch(bool resume = false);
+        // Why switching could not start or stopped (shown in the panel)
+        std::string fswitch_error;
+        bool source_is_remote();
         void stop_fswitch();
 
     private: // VFO Stuff

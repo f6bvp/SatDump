@@ -54,11 +54,6 @@ namespace satdump
 
         run_dwell = std::max(0.1f, dwell_s);
         run_settle = std::max(0.0f, settle_s);
-        run_delay = std::max(0.0f, delay_s);
-        calibrating = false;
-        slots.clear();
-        measured_delay = -1;
-        delay_score_ratio = 0;
 
         events.clear();
         n_frames = 0;
@@ -117,10 +112,6 @@ namespace satdump
             std::lock_guard<std::mutex> lk(mtx);
             remote = false;
             kept = init_run(center_hz, sr, fft_size, init_display, resume);
-            // The delay is measured again (it may have changed); the kept
-            // averages are not touched meanwhile
-            calibrating = auto_delay;
-            slot_len = std::max(fdt, 0.05);
             frame_dt = fdt;
         }
 
@@ -300,11 +291,6 @@ namespace satdump
     void FrequencySwitcher::reset()
     {
         std::lock_guard<std::mutex> lk(mtx);
-        if (auto_delay && running)
-        {
-            calibrating = true;
-            slots.clear();
-        }
         std::fill(sum_a.begin(), sum_a.end(), 0);
         std::fill(sum_b.begin(), sum_b.end(), 0);
         n_a = n_b = 0;
@@ -333,15 +319,7 @@ namespace satdump
                     events.pop_front();
             }
 
-            // While the delay is measured, B lasts twice as long as A: the
-            // pattern is then not symmetric and only one delay matches it
-            double dwell = run_dwell;
-            {
-                std::lock_guard<std::mutex> lk(mtx);
-                if (calibrating && ph == 1)
-                    dwell = 2 * run_dwell;
-            }
-            auto until = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(run_settle + dwell));
+            auto until = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(run_settle + run_dwell));
             {
                 std::unique_lock<std::mutex> lk(cv_mtx);
                 cv.wait_until(lk, until, [this] { return !running; });
@@ -388,31 +366,11 @@ namespace satdump
         if (now - rate_hist.front().first >= 1.0)
             speed_now = (n_frames - rate_hist.front().second) * frame_dt / (now - rate_hist.front().first);
 
-        // Main display, with the current delay
-        int ph_disp = phase_of(fstart, fend, run_delay);
-        if (ph_disp >= 0)
-            update_display(db, ph_disp);
-
-        // Keep short decimated slots, to measure then track the delay
-        add_slot(db, fstart, fend);
-        if (calibrating)
-        {
-            // Enough data: a few full (asymmetric) cycles plus one cycle for the delay
-            double cycle = 2 * run_settle + 3 * run_dwell;
-            if (fend - slots.front().t_start >= (CAL_CYCLES + 1) * cycle)
-                estimate_delay();
-            return;
-        }
-        else if (auto_delay)
-        {
-            double period = run_settle + run_dwell;
-            if (fend - slots.front().t_start >= (2 * TRACK_CYCLES + 1) * period)
-                track_delay();
-        }
-
-        int ph = phase_of(fstart, fend, run_delay);
+        // Local SDR: its samples arrive within Settle after a retune
+        int ph = phase_of(fstart, fend, 0.0);
         if (ph < 0)
             return;
+        update_display(db, ph);
 
         // dB -> linear power: 10^(x/10) = exp(x * ln(10) / 10)
         std::vector<double> &s = ph == 0 ? sum_a : sum_b;
@@ -499,129 +457,6 @@ namespace satdump
         if (fend > end_limit)
             return -1;
         return events[i].second;
-    }
-
-    void FrequencySwitcher::add_slot(const float *db, double fstart, double fend)
-    {
-        // mtx must be held
-        int ch = std::min(CAL_CHANNELS, nbins);
-        if (slots.empty() || fstart >= slots.back().t_start + slot_len)
-            slots.push_back({fstart, fend, std::vector<double>(ch, 0.0), 0});
-        Slot &sl = slots.back();
-        sl.t_end = fend;
-        for (int k = 0; k < nbins; k++)
-            sl.sum[(int64_t)k * ch / nbins] += std::exp((double)db[k] * 0.23025850929940458);
-        sl.count++;
-    }
-
-    bool FrequencySwitcher::search_delay(double lo, double hi, double &best_d, double &contrast)
-    {
-        // mtx must be held. The right delay separates A from B best.
-        int ch = slots.empty() ? 0 : (int)slots[0].sum.size();
-        double best = -1, sum_scores = 0;
-        int n_scores = 0;
-        std::vector<std::pair<double, double>> scores; // (delay, score)
-        for (double d = lo; d < hi; d += slot_len)
-        {
-            std::vector<double> a(ch, 0), b(ch, 0);
-            int na = 0, nb = 0;
-            for (auto &sl : slots)
-            {
-                int ph = phase_of(sl.t_start, sl.t_end, d);
-                if (ph < 0)
-                    continue;
-                std::vector<double> &t = ph == 0 ? a : b;
-                for (int k = 0; k < ch; k++)
-                    t[k] += sl.sum[k] / sl.count;
-                (ph == 0 ? na : nb)++;
-            }
-            if (na < 2 || nb < 2)
-                continue;
-            double score = 0;
-            for (int k = 0; k < ch; k++)
-            {
-                double am = a[k] / na, bm = b[k] / nb;
-                if (bm > 0)
-                    score += std::pow((am - bm) / bm, 2);
-            }
-            score *= (double)na * nb / (na + nb); // same noise level for every delay
-            sum_scores += score;
-            n_scores++;
-            scores.push_back({d, score});
-            if (score > best)
-                best = score;
-        }
-        if (n_scores == 0)
-            return false;
-
-        // Several delays can fit equally (the settle time gives some room):
-        // take the middle of that range, to keep a margin on both sides
-        int ib = 0;
-        while (scores[ib].second < best)
-            ib++;
-        int l = ib, r = ib;
-        while (l > 0 && scores[l - 1].second >= 0.95 * best)
-            l--;
-        while (r + 1 < (int)scores.size() && scores[r + 1].second >= 0.95 * best)
-            r++;
-        best_d = 0.5 * (scores[l].first + scores[r].first);
-        contrast = best / (sum_scores / n_scores);
-        return true;
-    }
-
-    void FrequencySwitcher::estimate_delay()
-    {
-        // mtx must be held. While measuring, B lasts twice as long as A, so
-        // one asymmetric cycle holds only one matching delay
-        double cycle = 2 * run_settle + 3 * run_dwell;
-        double d = 0, contrast = 0;
-        // The window of good delays can start slightly below zero: search
-        // one full cycle starting a bit before zero, so that it is not cut
-        // in two and wrapped to the end of the cycle
-        double lo = -std::min(1.0, cycle / 4);
-        bool ok = search_delay(lo, lo + cycle, d, contrast);
-        d = std::max(0.0, d);
-
-        calibrating = false;
-        slots.clear();
-        if (!ok)
-        {
-            logger->warn("Frequency switching: delay measurement failed, using %.2f s", run_delay);
-            cycles = cycles_run0;
-            return;
-        }
-        measured_delay = d;
-        delay_score_ratio = contrast;
-        run_delay = d;
-        // Nothing was summed while measuring; only the cycle count moved.
-        // The averages kept from a resumed run stay as they are
-        cycles = cycles_run0;
-        logger->info("Frequency switching: measured delay %.2f s (contrast %.1f)", measured_delay, delay_score_ratio);
-    }
-
-    void FrequencySwitcher::track_delay()
-    {
-        // mtx must be held. Small corrections only: within half a period
-        // the pattern holds a single matching delay
-        double period = run_settle + run_dwell;
-        double d = 0, contrast = 0;
-        // Stay within half a period of the first measurement: drifting by a
-        // whole period would swap A and B
-        double centre = measured_delay >= 0 ? measured_delay : run_delay;
-        double lo = std::max(-run_settle, centre - 0.45 * period), hi = centre + 0.45 * period;
-        if (search_delay(lo, hi, d, contrast) && contrast > 1.5)
-        {
-            d = std::max(0.0, d);
-            if (std::fabs(d - run_delay) >= slot_len)
-                logger->debug("Frequency switching: delay %.2f -> %.2f s (contrast %.1f)", run_delay, d, contrast);
-            run_delay = d;
-            delay_score_ratio = contrast;
-        }
-
-        // Keep the last cycles only
-        double keep_from = slots.back().t_end - 2 * TRACK_CYCLES * period;
-        while (!slots.empty() && slots.front().t_end < keep_from)
-            slots.erase(slots.begin());
     }
 
     void FrequencySwitcher::compute()
@@ -846,22 +681,10 @@ namespace satdump
                 ImGui::TextColored(ImVec4(1, 0.3, 0.3, 1), "IQ : %s", remote_iq_error.c_str());
             return;
         }
-        if (calibrating)
-            ImGui::TextColored(ImVec4(1, 0.8, 0.2, 1), "Measuring the delay (%d cycles)...", CAL_CYCLES);
-        else if (measured_delay >= 0)
-            ImGui::Text("Delay : %.2f s tracked (contrast %.1f)", run_delay, delay_score_ratio);
-        else
-            ImGui::Text("Delay : %.2f s", run_delay);
         ImGui::Text("Stream : %.2f MS/s (last 5 s)", speed_now * samplerate / 1e6);
         ImGui::Text("Samples lost : %.1f %% now, %.1f %% since start", std::max(0.0, (1 - speed_now) * 100), std::max(0.0, (1 - speed) * 100));
         if (running && n_frames > 20 && speed_now < 0.9)
             ImGui::TextColored(ImVec4(1, 0.6, 0.2, 1), "More than 10 %% of the samples are lost");
-
-        // The tracked delay must stay within half a period of the first
-        // measurement, or A and B would be swapped: warn before
-        double period = run_settle + run_dwell;
-        if (!calibrating && measured_delay >= 0 && std::fabs(run_delay - measured_delay) > 0.35 * period)
-            ImGui::TextColored(ImVec4(1, 0.3, 0.3, 1), "Delay moved by %.2f s since the start:\nincrease Dwell, or Reset to measure it again", run_delay - measured_delay);
     }
 
     void FrequencySwitcher::compute_once()
@@ -1116,7 +939,7 @@ namespace satdump
 
         out << "# SatDump frequency switching (experimental)\n";
         out << "# f0_hz=" << (uint64_t)f0 << " samplerate=" << samplerate << " fft_size=" << nbins << "\n";
-        out << "# offset_hz=+/-" << delta_eff << " offset_bins=" << dk << " dwell_s=" << run_dwell << " settle_s=" << run_settle << " delay_s=" << (remote ? 0.0 : run_delay) << "\n";
+        out << "# offset_hz=+/-" << delta_eff << " offset_bins=" << dk << " dwell_s=" << run_dwell << " settle_s=" << run_settle << "\n";
         out << "# switching=" << (remote ? "server" : "client");
         if (remote && remote_iq_file.size())
             out << " iq_on_server=" << remote_iq_file;
