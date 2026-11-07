@@ -597,251 +597,258 @@ namespace satdump
             fswitch.draw_status();
         }
 
-        if (ImGui::CollapsingHeader(_("Processing")))
+        // While switching, only Source, FFT and Frequency switching are useful:
+        // hide the rest to keep the panel short
+        if (fswitch.is_running())
+            show_tracking = false;
+        else
         {
-            // Settings & Selection menu
-            bool assume_processing = is_processing;
-            if (assume_processing)
-                style::beginDisabled();
-            pipeline_selector.renderSelectionBox(ImGui::GetContentRegionAvail().x);
-            if (!automated_live_output_dir)
-                pipeline_selector.drawMainparamsLive();
-            pipeline_selector.renderParamTable();
-            if (assume_processing)
-                style::endDisabled();
-
-            // Preset Menu
-            if (pipeline_selector.selected_pipeline.preset.frequencies.size() > 0)
+            if (ImGui::CollapsingHeader(_("Processing")))
             {
-                if (ImGui::BeginCombo(_("Freq###presetscombo"), pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second == frequency_hz
-                                                                    ? pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].first.c_str()
-                                                                    : ""))
-                {
-                    for (int n = 0; n < (int)pipeline_selector.selected_pipeline.preset.frequencies.size(); n++)
-                    {
-                        const bool is_selected = (pipeline_preset_id == n);
-                        if (ImGui::Selectable(pipeline_selector.selected_pipeline.preset.frequencies[n].first.c_str(), is_selected))
-                        {
-                            pipeline_preset_id = n;
+                // Settings & Selection menu
+                bool assume_processing = is_processing;
+                if (assume_processing)
+                    style::beginDisabled();
+                pipeline_selector.renderSelectionBox(ImGui::GetContentRegionAvail().x);
+                if (!automated_live_output_dir)
+                    pipeline_selector.drawMainparamsLive();
+                pipeline_selector.renderParamTable();
+                if (assume_processing)
+                    style::endDisabled();
 
-                            if (pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second != 0)
+                // Preset Menu
+                if (pipeline_selector.selected_pipeline.preset.frequencies.size() > 0)
+                {
+                    if (ImGui::BeginCombo(_("Freq###presetscombo"), pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second == frequency_hz
+                                                                        ? pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].first.c_str()
+                                                                        : ""))
+                    {
+                        for (int n = 0; n < (int)pipeline_selector.selected_pipeline.preset.frequencies.size(); n++)
+                        {
+                            const bool is_selected = (pipeline_preset_id == n);
+                            if (ImGui::Selectable(pipeline_selector.selected_pipeline.preset.frequencies[n].first.c_str(), is_selected))
                             {
-                                frequency_hz = pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second;
-                                set_frequency(frequency_hz);
+                                pipeline_preset_id = n;
+
+                                if (pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second != 0)
+                                {
+                                    frequency_hz = pipeline_selector.selected_pipeline.preset.frequencies[pipeline_preset_id].second;
+                                    set_frequency(frequency_hz);
+                                }
                             }
+
+                            if (is_selected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+
+                if (!assume_started)
+                    style::beginDisabled();
+
+                bool assume_stopping_processing = is_stopping_processing;
+                if (!assume_processing)
+                {
+                    if (ImGui::Button(_("Start###startprocessing")))
+                        start_processing();
+                }
+                else if (assume_stopping_processing)
+                {
+                    style::beginDisabled();
+                    ImGui::Button(_("Stopping...##stoppingprocessing"));
+                    style::endDisabled();
+                }
+                else
+                {
+                    if (ImGui::Button(_("Stop##stopprocessing")))
+                        ui_thread_pool.push([=](int) { stop_processing(); });
+                }
+
+                error.draw();
+
+                if (!assume_started)
+                    style::endDisabled();
+            }
+
+            if (ImGui::CollapsingHeader(_("Recording")))
+            {
+                bool assume_recording = is_recording;
+                if (assume_recording)
+                    style::beginDisabled();
+
+                if (baseband_format.draw_record_combo(_("Format##basebandrecordformat")))
+                    file_sink->set_output_sample_type(baseband_format);
+
+                if (assume_recording)
+                    style::endDisabled();
+
+                uint64_t file_written = file_sink->get_written();
+                uint64_t estimated_available = 0;
+                if (file_written <= disk_available)
+                    estimated_available = disk_available - file_written;
+
+                if (file_written < 1e9)
+                    ImGui::Text(_("Size : %.2f MB"), file_written / 1e6);
+                else
+                    ImGui::Text(_("Size : %.2f GB"), file_written / 1e9);
+
+                ImGui::Text(_("Free Space: %.2f GB"), estimated_available / pow(1024, 3));
+
+                int timeleft;
+                switch (baseband_format)
+                {
+                case dsp::CF_32:
+                case dsp::CS_32:
+                    timeleft = estimated_available / (8 * get_samplerate());
+                    break;
+                case dsp::CS_16:
+                case dsp::WAV_16:
+                    timeleft = estimated_available / (4 * get_samplerate());
+                    break;
+                case dsp::CS_8:
+                case dsp::CU_8:
+                    timeleft = estimated_available / (2 * get_samplerate());
+                    break;
+                default:
+                    // Silence GCC warns
+                    timeleft = 0;
+                    break;
+                }
+    #ifdef BUILD_ZIQ
+                if (baseband_format != dsp::ZIQ)
+    #endif
+                {
+    #ifdef BUILD_ZIQ2
+                    if (baseband_format != dsp::ZIQ2)
+    #endif
+                    {
+                        if (is_recording && remaining_disk_space_time > timeleft && !been_warned)
+                        {
+                            logger->warn(_("!!!!WARNING - LOW AMOUNT OF FREE DISK SPACE!!!!"));
+                            been_warned = true;
                         }
 
-                        if (is_selected)
-                            ImGui::SetItemDefaultFocus();
+                        int day = timeleft / (24 * 3600);
+
+                        timeleft = timeleft % (24 * 3600);
+                        int hour = timeleft / 3600;
+
+                        timeleft %= 3600;
+                        int minutes = timeleft / 60;
+
+                        timeleft %= 60;
+                        int seconds = timeleft;
+                        ImGui::Text(_("Time left: %02d:%02d:%02d:%02d"), day, hour, minutes, seconds);
                     }
-                    ImGui::EndCombo();
                 }
-            }
 
-            if (!assume_started)
-                style::beginDisabled();
-
-            bool assume_stopping_processing = is_stopping_processing;
-            if (!assume_processing)
-            {
-                if (ImGui::Button(_("Start###startprocessing")))
-                    start_processing();
-            }
-            else if (assume_stopping_processing)
-            {
-                style::beginDisabled();
-                ImGui::Button(_("Stopping...##stoppingprocessing"));
-                style::endDisabled();
-            }
-            else
-            {
-                if (ImGui::Button(_("Stop##stopprocessing")))
-                    ui_thread_pool.push([=](int) { stop_processing(); });
-            }
-
-            error.draw();
-
-            if (!assume_started)
-                style::endDisabled();
-        }
-
-        if (ImGui::CollapsingHeader(_("Recording")))
-        {
-            bool assume_recording = is_recording;
-            if (assume_recording)
-                style::beginDisabled();
-
-            if (baseband_format.draw_record_combo(_("Format##basebandrecordformat")))
-                file_sink->set_output_sample_type(baseband_format);
-
-            if (assume_recording)
-                style::endDisabled();
-
-            uint64_t file_written = file_sink->get_written();
-            uint64_t estimated_available = 0;
-            if (file_written <= disk_available)
-                estimated_available = disk_available - file_written;
-
-            if (file_written < 1e9)
-                ImGui::Text(_("Size : %.2f MB"), file_written / 1e6);
-            else
-                ImGui::Text(_("Size : %.2f GB"), file_written / 1e9);
-
-            ImGui::Text(_("Free Space: %.2f GB"), estimated_available / pow(1024, 3));
-
-            int timeleft;
-            switch (baseband_format)
-            {
-            case dsp::CF_32:
-            case dsp::CS_32:
-                timeleft = estimated_available / (8 * get_samplerate());
-                break;
-            case dsp::CS_16:
-            case dsp::WAV_16:
-                timeleft = estimated_available / (4 * get_samplerate());
-                break;
-            case dsp::CS_8:
-            case dsp::CU_8:
-                timeleft = estimated_available / (2 * get_samplerate());
-                break;
-            default:
-                // Silence GCC warns
-                timeleft = 0;
-                break;
-            }
-#ifdef BUILD_ZIQ
-            if (baseband_format != dsp::ZIQ)
-#endif
-            {
-#ifdef BUILD_ZIQ2
-                if (baseband_format != dsp::ZIQ2)
-#endif
+    #ifdef BUILD_ZIQ
+                if (baseband_format == dsp::ZIQ)
                 {
-                    if (is_recording && remaining_disk_space_time > timeleft && !been_warned)
-                    {
-                        logger->warn(_("!!!!WARNING - LOW AMOUNT OF FREE DISK SPACE!!!!"));
-                        been_warned = true;
-                    }
-
-                    int day = timeleft / (24 * 3600);
-
-                    timeleft = timeleft % (24 * 3600);
-                    int hour = timeleft / 3600;
-
-                    timeleft %= 3600;
-                    int minutes = timeleft / 60;
-
-                    timeleft %= 60;
-                    int seconds = timeleft;
-                    ImGui::Text(_("Time left: %02d:%02d:%02d:%02d"), day, hour, minutes, seconds);
+                    if (file_sink->get_written_raw() < 1e9)
+                        ImGui::Text(_("Size (raw) : %.2f MB"), file_sink->get_written_raw() / 1e6);
+                    else
+                        ImGui::Text(_("Size (raw) : %.2f GB"), file_sink->get_written_raw() / 1e9);
                 }
-            }
+    #endif
 
-#ifdef BUILD_ZIQ
-            if (baseband_format == dsp::ZIQ)
-            {
-                if (file_sink->get_written_raw() < 1e9)
-                    ImGui::Text(_("Size (raw) : %.2f MB"), file_sink->get_written_raw() / 1e6);
+                ImGui::Text(_("File : %s"), recorder_filename.c_str());
+
+                ImGui::Spacing();
+
+                if (!assume_recording)
+                    ImGui::TextColored(style::theme.red, _("IDLE"));
                 else
-                    ImGui::Text(_("Size (raw) : %.2f GB"), file_sink->get_written_raw() / 1e9);
-            }
-#endif
+                    ImGui::TextColored(style::theme.green, _("RECORDING"));
 
-            ImGui::Text(_("File : %s"), recorder_filename.c_str());
+                ImGui::Spacing();
 
-            ImGui::Spacing();
-
-            if (!assume_recording)
-                ImGui::TextColored(style::theme.red, _("IDLE"));
-            else
-                ImGui::TextColored(style::theme.green, _("RECORDING"));
-
-            ImGui::Spacing();
-
-            if (!assume_recording)
-            {
-                if (ImGui::Button(_("Start###startrecording")))
-                    start_recording();
-            }
-            else
-            {
-                if (ImGui::Button(_("Stop##stoprecording")))
-                    stop_recording();
-            }
-        }
-
-        show_tracking = ImGui::CollapsingHeader(_("Tracking"), tracking_started_cli ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None);
-        if (show_tracking)
-        {
-            try_init_tracking_widget();
-            tracking_widget->render();
-        }
-
-        if (ImGui::CollapsingHeader(_("VFOs")))
-        {
-            vfos_mtx.lock();
-            std::string to_delete = "";
-            if (vfo_list.size() == 0)
-            {
-                const char *no_vfo_text = _("No Active VFOs");
-                ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x / 2 - ImGui::CalcTextSize(no_vfo_text).x / 2);
-                ImGui::TextDisabled("%s", no_vfo_text);
-            }
-            else
-            {
-                for (auto &vfo : vfo_list)
+                if (!assume_recording)
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, style::theme.green.Value);
-                    ImGui::SeparatorText(vfo.name.c_str());
-                    ImGui::PopStyleColor();
-                    ImGui::BulletText(_("Frequency: %s"), format_notated(vfo.freq, "Hz").c_str());
-                    if (vfo.selected_pipeline.id != "")
-                    {
-                        ImGui::BulletText(_("Pipeline: %s"), vfo.selected_pipeline.id.c_str());
-                        ImGui::BulletText(_("Directory: %s"), vfo.output_dir.c_str());
-                    }
-                    else if (vfo.file_sink)
-                    {
-                        if (vfo.file_sink->get_written() < 1e9)
-                            ImGui::BulletText(_("IQ Size: %.2f MB"), vfo.file_sink->get_written() / 1e6);
-                        else
-                            ImGui::BulletText(_("IQ Size: %.2f GB"), vfo.file_sink->get_written() / 1e9);
-                    }
-                    ImGui::Spacing();
-                    if (ImGui::Button(std::string(_("Stop##") + vfo.id).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0)))
-                        to_delete = vfo.id;
+                    if (ImGui::Button(_("Start###startrecording")))
+                        start_recording();
+                }
+                else
+                {
+                    if (ImGui::Button(_("Stop##stoprecording")))
+                        stop_recording();
                 }
             }
-            vfos_mtx.unlock();
-            if (to_delete != "")
-                del_vfo(to_delete);
-#if 0
-            if (ImGui::Button("Add Test"))
+
+            show_tracking = ImGui::CollapsingHeader(_("Tracking"), tracking_started_cli ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None);
+            if (show_tracking)
             {
-                int idp = 0;
-                for (int n = 0; n < (int)pipeline::pipelines.size(); n++)
+                try_init_tracking_widget();
+                tracking_widget->render();
+            }
+
+            if (ImGui::CollapsingHeader(_("VFOs")))
+            {
+                vfos_mtx.lock();
+                std::string to_delete = "";
+                if (vfo_list.size() == 0)
                 {
-                    if ("meteor_m2-x_lrpt" == pipeline::pipelines[n].id)
-                        idp = n;
+                    const char *no_vfo_text = _("No Active VFOs");
+                    ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x / 2 - ImGui::CalcTextSize(no_vfo_text).x / 2);
+                    ImGui::TextDisabled("%s", no_vfo_text);
+                }
+                else
+                {
+                    for (auto &vfo : vfo_list)
+                    {
+                        ImGui::PushStyleColor(ImGuiCol_Text, style::theme.green.Value);
+                        ImGui::SeparatorText(vfo.name.c_str());
+                        ImGui::PopStyleColor();
+                        ImGui::BulletText(_("Frequency: %s"), format_notated(vfo.freq, "Hz").c_str());
+                        if (vfo.selected_pipeline.id != "")
+                        {
+                            ImGui::BulletText(_("Pipeline: %s"), vfo.selected_pipeline.id.c_str());
+                            ImGui::BulletText(_("Directory: %s"), vfo.output_dir.c_str());
+                        }
+                        else if (vfo.file_sink)
+                        {
+                            if (vfo.file_sink->get_written() < 1e9)
+                                ImGui::BulletText(_("IQ Size: %.2f MB"), vfo.file_sink->get_written() / 1e6);
+                            else
+                                ImGui::BulletText(_("IQ Size: %.2f GB"), vfo.file_sink->get_written() / 1e9);
+                        }
+                        ImGui::Spacing();
+                        if (ImGui::Button(std::string(_("Stop##") + vfo.id).c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0)))
+                            to_delete = vfo.id;
+                    }
+                }
+                vfos_mtx.unlock();
+                if (to_delete != "")
+                    del_vfo(to_delete);
+    #if 0
+                if (ImGui::Button("Add Test"))
+                {
+                    int idp = 0;
+                    for (int n = 0; n < (int)pipeline::pipelines.size(); n++)
+                    {
+                        if ("meteor_m2-x_lrpt" == pipeline::pipelines[n].id)
+                            idp = n;
+                    }
+
+                    add_vfo_live("meteor_test", "Meteor Test", 137.9e6, pipeline::pipelines[idp], {});
                 }
 
-                add_vfo_live("meteor_test", "Meteor Test", 137.9e6, pipeline::pipelines[idp], {});
+                if (ImGui::Button("Del Test"))
+                {
+                    del_vfo("meteor_test");
+                }
+    #endif
             }
 
-            if (ImGui::Button("Del Test"))
+            if (ImGui::CollapsingHeader(_("Debug")))
             {
-                del_vfo("meteor_test");
+                if (constellation_debug == nullptr)
+                    constellation_debug = new widgets::ConstellationViewer();
+                if (is_started)
+                    constellation_debug->pushComplex(source_ptr->output_stream->readBuf, 256);
+                constellation_debug->draw();
             }
-#endif
-        }
-
-        if (ImGui::CollapsingHeader(_("Debug")))
-        {
-            if (constellation_debug == nullptr)
-                constellation_debug = new widgets::ConstellationViewer();
-            if (is_started)
-                constellation_debug->pushComplex(source_ptr->output_stream->readBuf, 256);
-            constellation_debug->draw();
         }
 
         eventBus->fire_event<RecorderDrawPanelEvent>({});
