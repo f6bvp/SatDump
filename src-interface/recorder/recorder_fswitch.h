@@ -75,6 +75,17 @@ namespace satdump
         // Bins more than this below the median level (band edges) are hidden
         float edge_db = 3.0f;
 
+        // Narrow interference (spurs, e.g. the Airspy clock harmonic at
+        // 1420.000 MHz): in the mean spectra A and B, bins standing above the
+        // local median by more than rfi_sigma times the noise are replaced
+        // by an interpolation of their neighbours. The local median is taken
+        // over blocks of rfi_width_khz, much narrower than the HI line but
+        // much wider than a spur. The raw sums are kept: unticking restores.
+        bool rfi_remove = true;
+        float rfi_sigma = 6.0f;
+        float rfi_width_khz = 10.0f;
+        int rfi_grow = 2; // also flag this many bins on each side
+
         // Tunes the SDR without changing the recorder frequency
         std::function<void(double)> set_sdr_frequency = [](double) {};
 
@@ -250,6 +261,17 @@ namespace satdump
         // Unfolded: o1 - o2 = (A-B)/B and o2 - o1 = (B-A)/A, receiver axis
         std::vector<double> unf_x, unf_12, unf_21;
         void smooth_scale(const std::vector<double> &y, std::vector<double> &out);
+
+        // Interference flags of A and B (receiver axis), from the whole
+        // averages, used for the result and the cycles file too
+        std::vector<uint8_t> rfi_a, rfi_b;
+        int rfi_count_a = 0, rfi_count_b = 0;
+        uint64_t rfi_na = 0, rfi_nb = 0; // n_a, n_b when last detected
+        float rfi_last_sigma = 0, rfi_last_width = 0;
+        void rfi_detect(const std::vector<double> &m, std::vector<uint8_t> &flag, int &count);
+        static void rfi_fill(std::vector<double> &m, const std::vector<uint8_t> &flag);
+        // Mean A and B, with the interference removed if enabled
+        void mean_spectra(std::vector<double> &a, std::vector<double> &b);
         int computed_frame = -1; // compute() once per UI frame
         std::atomic<bool> stop_requested{false};
         void compute_once();

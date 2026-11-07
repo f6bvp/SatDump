@@ -637,12 +637,8 @@ namespace satdump
 
         const double nan = std::numeric_limits<double>::quiet_NaN();
 
-        std::vector<double> a(nbins), b(nbins), q(nbins);
-        for (int k = 0; k < nbins; k++)
-        {
-            a[k] = sum_a[k] / n_a;
-            b[k] = sum_b[k] / n_b;
-        }
+        std::vector<double> a, b, q(nbins);
+        mean_spectra(a, b);
 
         // Hide the band edges: bins well below the median level
         std::vector<double> med = b;
@@ -672,6 +668,123 @@ namespace satdump
             unf_x.push_back((f0 + ((double)k / nbins - 0.5) * samplerate) / 1e6);
         smooth_scale(q, unf_12);
         smooth_scale(q21, unf_21);
+    }
+
+    void FrequencySwitcher::rfi_detect(const std::vector<double> &m, std::vector<uint8_t> &flag, int &count)
+    {
+        // mtx must be held
+        int n = m.size();
+        flag.assign(n, 0);
+        count = 0;
+        int block = std::max(5, (int)std::lround(rfi_width_khz * 1e3 * n / samplerate));
+        int nblocks = n / block;
+        if (nblocks < 3)
+            return;
+
+        // Local level: median of each block, linearly interpolated between
+        // block centres. A spur narrower than half a block does not move it
+        std::vector<double> centre(nblocks), level(nblocks), tmp;
+        for (int i = 0; i < nblocks; i++)
+        {
+            int lo = i * block, hi = (i == nblocks - 1) ? n : lo + block;
+            tmp.assign(m.begin() + lo, m.begin() + hi);
+            std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
+            level[i] = tmp[tmp.size() / 2];
+            centre[i] = 0.5 * (lo + hi - 1);
+        }
+        std::vector<double> r(n);
+        int i = 0;
+        for (int k = 0; k < n; k++)
+        {
+            while (i < nblocks - 2 && k > centre[i + 1])
+                i++;
+            double t = std::clamp((k - centre[i]) / (centre[i + 1] - centre[i]), 0.0, 1.0);
+            double base = level[i] + t * (level[i + 1] - level[i]);
+            r[k] = base > 0 ? m[k] / base - 1 : 0;
+        }
+
+        // Noise: robust spread of the residual over the whole band
+        tmp = r;
+        std::nth_element(tmp.begin(), tmp.begin() + n / 2, tmp.end());
+        double med = tmp[n / 2];
+        for (int k = 0; k < n; k++)
+            tmp[k] = std::fabs(r[k] - med);
+        std::nth_element(tmp.begin(), tmp.begin() + n / 2, tmp.end());
+        double sigma = 1.4826 * tmp[n / 2];
+        if (!(sigma > 0))
+            return;
+
+        // Spurs stand above the local level only
+        double lim = med + rfi_sigma * sigma;
+        for (int k = 0; k < n; k++)
+        {
+            if (r[k] > lim)
+            {
+                for (int j = std::max(0, k - rfi_grow); j <= std::min(n - 1, k + rfi_grow); j++)
+                    flag[j] = 1;
+            }
+        }
+        for (int k = 0; k < n; k++)
+            count += flag[k];
+    }
+
+    void FrequencySwitcher::rfi_fill(std::vector<double> &m, const std::vector<uint8_t> &flag)
+    {
+        // Each run of flagged bins: straight line between its clean neighbours
+        int n = m.size();
+        if ((int)flag.size() != n)
+            return;
+        int k = 0;
+        while (k < n)
+        {
+            if (!flag[k])
+            {
+                k++;
+                continue;
+            }
+            int start = k;
+            while (k < n && flag[k])
+                k++;
+            int left = start - 1, right = k; // clean neighbours, may be outside
+            if (left < 0 && right >= n)
+                return;
+            double vl = left >= 0 ? m[left] : m[right];
+            double vr = right < n ? m[right] : m[left];
+            for (int j = start; j < k; j++)
+                m[j] = vl + (vr - vl) * (j - left) / (double)(right - left);
+        }
+    }
+
+    void FrequencySwitcher::mean_spectra(std::vector<double> &a, std::vector<double> &b)
+    {
+        // mtx must be held, n_a and n_b > 0
+        a.resize(nbins);
+        b.resize(nbins);
+        for (int k = 0; k < nbins; k++)
+        {
+            a[k] = sum_a[k] / n_a;
+            b[k] = sum_b[k] / n_b;
+        }
+        if (!rfi_remove)
+        {
+            rfi_a.clear();
+            rfi_b.clear();
+            rfi_count_a = rfi_count_b = 0;
+            rfi_na = rfi_nb = 0;
+            return;
+        }
+        // Detect again only when the averages or the settings changed
+        if (n_a != rfi_na || n_b != rfi_nb || rfi_sigma != rfi_last_sigma || rfi_width_khz != rfi_last_width || (int)rfi_a.size() != nbins)
+        {
+            rfi_detect(a, rfi_a, rfi_count_a);
+            rfi_detect(b, rfi_b, rfi_count_b);
+            rfi_na = n_a;
+            rfi_nb = n_b;
+            rfi_last_sigma = rfi_sigma;
+            rfi_last_width = rfi_width_khz;
+        }
+        rfi_fill(a, rfi_a);
+        rfi_fill(b, rfi_b);
     }
 
     void FrequencySwitcher::smooth_scale(const std::vector<double> &y, std::vector<double> &out)
@@ -713,6 +826,8 @@ namespace satdump
         ImGui::Text("Offset : +/- %.1f kHz (%d bins)", delta_eff / 1e3, dk);
         ImGui::Text("Cycles : %llu (%.0f s on sky)", (unsigned long long)cycles, cycles * 2 * run_dwell);
         ImGui::Text("Frames : A %llu / B %llu", (unsigned long long)n_a, (unsigned long long)n_b);
+        if (rfi_remove && (int)rfi_a.size() == nbins)
+            ImGui::Text("Interference removed : A %d / B %d bins", rfi_count_a, rfi_count_b);
         if (resumed)
             ImGui::TextDisabled("Resumed: %llu cycles kept from before", (unsigned long long)cycles_run0);
         if (cyc_path.size())
@@ -943,10 +1058,22 @@ namespace satdump
             cyc_file << unix_s;
             cyc_file.precision(6);
             cyc_file << "," << cyc_count << "," << cyc_na << "," << cyc_nb;
+            // Means of this cycle, with the interference found in the whole averages removed
+            std::vector<double> ca(nbins), cb(nbins);
+            for (int k = 0; k < nbins; k++)
+            {
+                ca[k] = cyc_a[k] / cyc_na;
+                cb[k] = cyc_b[k] / cyc_nb;
+            }
+            if (rfi_remove)
+            {
+                rfi_fill(ca, rfi_a);
+                rfi_fill(cb, rfi_b);
+            }
             for (int j = dk; j < nbins - dk; j++)
             {
-                double aa = cyc_a[j - dk] / cyc_na, ba = cyc_b[j - dk] / cyc_nb;
-                double ab = cyc_a[j + dk] / cyc_na, bb = cyc_b[j + dk] / cyc_nb;
+                double aa = ca[j - dk], ba = cb[j - dk];
+                double ab = ca[j + dk], bb = cb[j + dk];
                 cyc_file << ",";
                 if (ba > 0 && ab > 0)
                     cyc_file << 0.5 * ((aa - ba) / ba + (bb - ab) / ab);
@@ -997,23 +1124,31 @@ namespace satdump
         out << "# cycles=" << cycles << " frames_a=" << n_a << " frames_b=" << n_b << "\n";
         out << "# A = mean linear power tuned at f0+offset, B = tuned at f0-offset, indexed by FFT bin\n";
         out << "# q = (A-B)/B ; folded(j) = ((A-B)/B (j-d) + (B-A)/A (j+d))/2, sky frequency rf_hz, empty near the edges\n";
-        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded\n";
+        std::vector<double> ma, mb;
+        mean_spectra(ma, mb);
+        bool rfi = rfi_remove && (int)rfi_a.size() == nbins && (int)rfi_b.size() == nbins;
+        if (rfi)
+            out << "# interference removed: a_lin and b_lin interpolated where rfi_a / rfi_b = 1 (" << rfi_count_a << " / " << rfi_count_b
+                << " bins, threshold " << rfi_sigma << " sigma, local median over " << rfi_width_khz << " kHz)\n";
+        else
+            out << "# interference removal off\n";
+        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b\n";
         out.precision(10);
         for (int j = 0; j < nbins; j++)
         {
             double off = ((double)j / nbins - 0.5) * samplerate;
-            double a = sum_a[j] / n_a, b = sum_b[j] / n_b;
+            double a = ma[j], b = mb[j];
             double q = b > 0 ? (a - b) / b : 0;
             out << j << "," << off << "," << (uint64_t)std::llround(f0 + off) << "," << a << "," << b << "," << q << ",";
             if (j >= dk && j < nbins - dk)
             {
-                double aa = sum_a[j - dk] / n_a, ba = sum_b[j - dk] / n_b;
-                double ab = sum_a[j + dk] / n_a, bb = sum_b[j + dk] / n_b;
+                double aa = ma[j - dk], ba = mb[j - dk];
+                double ab = ma[j + dk], bb = mb[j + dk];
                 double q12 = ba > 0 ? (aa - ba) / ba : 0; // o1 - o2, reference B
                 double q21 = ab > 0 ? (bb - ab) / ab : 0; // o2 - o1, reference A
                 out << 0.5 * (q12 + q21);
             }
-            out << "\n";
+            out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "\n";
         }
         return path;
     }

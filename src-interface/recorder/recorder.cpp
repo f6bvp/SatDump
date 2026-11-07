@@ -590,6 +590,16 @@ namespace satdump
             if (fswitch.auto_y)
                 ImGui::EndDisabled();
             widgets::SteppedSliderFloat(_("Edge mask (dB)"), &fswitch.edge_db, 0.5, 20, 0.5);
+            ImGui::Checkbox(_("Remove narrow interference"), &fswitch.rfi_remove);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", _("Spurs much narrower than the HI line (e.g. 1420.000 MHz) are removed from A and B before folding.\nThe raw averages are kept: untick to see them again."));
+            if (fswitch.rfi_remove)
+            {
+                ImGui::Indent();
+                widgets::SteppedSliderFloat(_("Threshold (x noise)"), &fswitch.rfi_sigma, 3, 50, 0.5, "%.1f");
+                widgets::SteppedSliderFloat(_("Local median width (kHz)"), &fswitch.rfi_width_khz, 1, 100, 1, "%.0f");
+                ImGui::Unindent();
+            }
             ImGui::Checkbox(_("Show folded window after stop"), &fswitch.show_window);
             ImGui::Checkbox(_("Show unfolded window (o1-o2, o2-o1)"), &fswitch.show_unfolded_window);
             fswitch.draw_status();
