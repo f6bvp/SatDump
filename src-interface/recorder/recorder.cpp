@@ -471,7 +471,8 @@ namespace satdump
             waterfall_plot->scale_max = fft_plot->scale_max;
         }
 
-        if (ImGui::CollapsingHeader(_("Frequency switching (experimental)")))
+        bool fswitch_open = ImGui::CollapsingHeader(_("Frequency switching (experimental)"));
+        if (fswitch_open)
         {
             ImGui::TextWrapped("%s", _("For very stable signals only (radio astronomy), not for satellites. Recording, processing and tracking must be off."));
             bool running = fswitch.is_running();
@@ -586,7 +587,29 @@ namespace satdump
                 ImGui::Indent();
                 ImGui::InputDouble(_("Rest frequency (MHz)"), &fswitch.rest_mhz, 0, 0, "%.6f");
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", _("HI 1420.405752, OH 1665.402 / 1667.359. v = c (f_rest - f) / f_rest, positive = receding, relative to the observer"));
+                    ImGui::SetTooltip("%s", _("HI 1420.405752, OH 1665.402 / 1667.359. v = c (f_rest - f) / f_rest, positive = receding"));
+                ImGui::Checkbox(_("LSR correction"), &fswitch.lsr);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", _("Velocity relative to the local standard of rest: removes the Earth rotation, the Earth orbit and the Sun motion.\nNeeds the source position and the station position (SatDump settings)."));
+                if (fswitch.lsr)
+                {
+                    ImGui::Combo(_("Coordinates##fswitchlsr"), &fswitch.lsr_frame, "RA/Dec J2000\0Galactic l/b\0");
+                    if (fswitch.lsr_frame == 0)
+                    {
+                        ImGui::InputDouble(_("RA (hours)"), &fswitch.src_ra_h, 0, 0, "%.4f");
+                        ImGui::InputDouble(_("Dec (degrees)"), &fswitch.src_dec, 0, 0, "%.4f");
+                    }
+                    else
+                    {
+                        ImGui::InputDouble(_("l (degrees)"), &fswitch.src_l, 0, 0, "%.3f");
+                        ImGui::InputDouble(_("b (degrees)"), &fswitch.src_b, 0, 0, "%.3f");
+                    }
+                    fswitch.update_lsr();
+                    if (fswitch.lsr_qth_ok)
+                        ImGui::TextDisabled("Correction %+.2f km/s (rotation %+.2f, orbit %+.2f, Sun %+.2f)", fswitch.lsr_corr, fswitch.lsr_rot, fswitch.lsr_orb, fswitch.lsr_sun);
+                    else
+                        ImGui::TextColored(ImVec4(1, 0.3, 0.3, 1), "%s", _("Station position not set (SatDump settings)"));
+                }
                 ImGui::Unindent();
             }
             ImGui::Checkbox(_("Remove narrow interference"), &fswitch.rfi_remove);
@@ -606,9 +629,9 @@ namespace satdump
             fswitch.draw_status();
         }
 
-        // While switching, only Source, FFT and Frequency switching are useful:
-        // hide the rest to keep the panel short
-        if (fswitch.is_running())
+        // With Frequency switching open (or running), only Source, FFT and
+        // Frequency switching are useful: hide the rest to keep the panel short
+        if (fswitch_open || fswitch.is_running())
             show_tracking = false;
         else
         {

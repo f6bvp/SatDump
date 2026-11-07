@@ -77,6 +77,23 @@ namespace satdump
         bool show_velocity = true;
         double rest_mhz = 1420.405752; // HI; OH: 1665.402, 1667.359
 
+        // Velocity relative to the local standard of rest (kinematic LSR,
+        // 20 km/s toward 18h03m50.3s +30d00m17s J2000): observer velocity
+        // projected on the source = Earth rotation + Earth orbit + Sun.
+        // Computed for the current time; agrees with astropy to 0.02 km/s
+        bool lsr = false;
+        int lsr_frame = 0;               // 0 = RA/Dec J2000, 1 = galactic l/b
+        double src_ra_h = 0.712, src_dec = 41.269; // M31
+        double src_l = 120.0, src_b = 0.0;
+        // Correction to add to the observed velocity (km/s), and its parts
+        double lsr_corr = 0, lsr_rot = 0, lsr_orb = 0, lsr_sun = 0;
+        bool lsr_qth_ok = false;
+        double qth_lat = 0, qth_lon = 0, qth_alt = 0;
+        // Updates lsr_* for the current time (call from the UI thread)
+        void update_lsr();
+        static void galactic_to_j2000(double l, double b, double &ra_deg, double &dec_deg);
+        static void lsr_correction(double jd, double lat, double lon, double alt_m, double ra_deg, double dec_deg, double &rot, double &orb, double &sun);
+
         // Narrow interference (spurs, e.g. the Airspy clock harmonic at
         // 1420.000 MHz): in the mean spectra A and B, bins standing above the
         // local median by more than rfi_sigma times the noise are replaced

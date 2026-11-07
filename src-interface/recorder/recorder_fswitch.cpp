@@ -1,4 +1,5 @@
 #include "recorder_fswitch.h"
+#include "core/config.h"
 #include "imgui/imgui.h"
 #include "imgui/implot/implot.h"
 #include "imgui/implot/implot_internal.h"
@@ -698,6 +699,84 @@ namespace satdump
         }
     }
 
+    void FrequencySwitcher::galactic_to_j2000(double l, double b, double &ra_deg, double &dec_deg)
+    {
+        // North galactic pole and longitude of the north celestial pole (J2000)
+        const double D = M_PI / 180, ag = 192.85948 * D, dg = 27.12825 * D, lncp = 122.93192 * D;
+        l *= D;
+        b *= D;
+        double sd = std::sin(b) * std::sin(dg) + std::cos(b) * std::cos(dg) * std::cos(lncp - l);
+        double y = std::cos(b) * std::sin(lncp - l);
+        double x = std::sin(b) * std::cos(dg) - std::cos(b) * std::sin(dg) * std::cos(lncp - l);
+        ra_deg = std::fmod((ag + std::atan2(y, x)) / D + 360.0, 360.0);
+        dec_deg = std::asin(sd) / D;
+    }
+
+    void FrequencySwitcher::lsr_correction(double jd, double lat, double lon, double alt_m, double ra, double dec, double &rot, double &orb, double &sun)
+    {
+        // Velocities projected on the source direction (km/s), to add to the
+        // observed radial velocity. Low precision formulas (Meeus), J2000
+        const double D = M_PI / 180;
+        double s[3] = {std::cos(dec * D) * std::cos(ra * D), std::cos(dec * D) * std::sin(ra * D), std::sin(dec * D)};
+        double T = (jd - 2451545.0) / 36525;
+
+        // Earth orbit: from the geometric longitude of the Sun (Meeus ch. 25)
+        double L0 = 280.46646 + 36000.76983 * T + 0.0003032 * T * T;
+        double M = (357.52911 + 35999.05029 * T - 0.0001537 * T * T) * D;
+        double C = (1.914602 - 0.004817 * T - 0.000014 * T * T) * std::sin(M) + (0.019993 - 0.000101 * T) * std::sin(2 * M) + 0.000289 * std::sin(3 * M);
+        double e = 0.016708634 - 0.000042037 * T;
+        double prec = 1.396971 * T + 0.0003086 * T * T; // equinox of date -> J2000
+        double lsun = (L0 + C - prec) * D, peri = (102.93735 + 1.71946 * T - prec) * D;
+        const double K = 29.7885, eps = 23.4392911 * D;
+        double vx = K * (std::sin(lsun) - e * std::sin(peri));
+        double vy = K * (-std::cos(lsun) + e * std::cos(peri));
+        orb = vx * s[0] + vy * std::cos(eps) * s[1] + vy * std::sin(eps) * s[2];
+
+        // Earth rotation, from the local sidereal time
+        double d = jd - 2451545.0;
+        double gmst = std::fmod(280.46061837 + 360.98564736629 * d + 0.000387933 * T * T, 360.0);
+        double lst = (gmst + lon) * D;
+        double vr = 7.2921159e-5 * (6378.137 + alt_m / 1000) * std::cos(lat * D);
+        rot = vr * (-std::sin(lst) * s[0] + std::cos(lst) * s[1]);
+
+        // Sun relative to the LSR
+        const double ar = 270.959542 * D, dr = 30.004667 * D;
+        sun = 20.0 * (std::cos(dr) * std::cos(ar) * s[0] + std::cos(dr) * std::sin(ar) * s[1] + std::sin(dr) * s[2]);
+    }
+
+    void FrequencySwitcher::update_lsr()
+    {
+        if (!lsr_qth_ok)
+        {
+            try
+            {
+                qth_lat = satdump_cfg.getValueFromSatDumpGeneral<double>("qth_lat");
+                qth_lon = satdump_cfg.getValueFromSatDumpGeneral<double>("qth_lon");
+                qth_alt = satdump_cfg.getValueFromSatDumpGeneral<double>("qth_alt");
+                lsr_qth_ok = true;
+            }
+            catch (std::exception &)
+            {
+            }
+        }
+        if (!lsr)
+        {
+            lsr_corr = lsr_rot = lsr_orb = lsr_sun = 0;
+            return;
+        }
+        double ra, dec;
+        if (lsr_frame == 1)
+            galactic_to_j2000(src_l, src_b, ra, dec);
+        else
+        {
+            ra = src_ra_h * 15.0;
+            dec = src_dec;
+        }
+        double jd = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() / 86400.0 + 2440587.5;
+        lsr_correction(jd, qth_lat, qth_lon, qth_alt, ra, dec, lsr_rot, lsr_orb, lsr_sun);
+        lsr_corr = lsr_rot + lsr_orb + lsr_sun;
+    }
+
     void FrequencySwitcher::velocity_ticks(double fmin, double fmax)
     {
         // Round velocity steps (1, 2 or 5 x 10^k km/s), about 8 ticks.
@@ -708,7 +787,8 @@ namespace satdump
         vel_labels.clear();
         if (!(fmax > fmin) || !(rest_mhz > 0))
             return;
-        double v1 = c * (rest_mhz - fmax) / rest_mhz, v2 = c * (rest_mhz - fmin) / rest_mhz;
+        // Observed velocities, plus the LSR correction (0 when off)
+        double v1 = c * (rest_mhz - fmax) / rest_mhz + lsr_corr, v2 = c * (rest_mhz - fmin) / rest_mhz + lsr_corr;
         double raw = (v2 - v1) / 8, p = std::pow(10.0, std::floor(std::log10(raw))), step = p;
         for (double m : {1.0, 2.0, 5.0, 10.0})
             if (m * p >= raw)
@@ -719,7 +799,7 @@ namespace satdump
         for (double v = std::ceil(v1 / step) * step; v <= v2 && vel_ticks.size() < 50; v += step)
         {
             double vv = std::fabs(v) < step * 1e-6 ? 0.0 : v;
-            vel_ticks.push_back(rest_mhz * (1 - vv / c));
+            vel_ticks.push_back(rest_mhz * (1 - (vv - lsr_corr) / c));
             char t[32];
             snprintf(t, sizeof(t), step < 1 ? "%.1f" : "%.0f", vv);
             vel_text.push_back(t);
@@ -745,8 +825,9 @@ namespace satdump
                     vel_lim[0] = plot_x.front();
                     vel_lim[1] = plot_x.back();
                 }
+                update_lsr();
                 velocity_ticks(vel_lim[0], vel_lim[1]);
-                ImPlot::SetupAxis(ImAxis_X2, "Radial velocity (km/s, observer)", ImPlotAxisFlags_Opposite | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoMenus);
+                ImPlot::SetupAxis(ImAxis_X2, lsr ? "Radial velocity, LSR (km/s)" : "Radial velocity, observer (km/s)", ImPlotAxisFlags_Opposite | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoMenus);
                 ImPlot::SetupAxisLimits(ImAxis_X2, vel_lim[0], vel_lim[1], ImPlotCond_Always);
                 if (vel_ticks.size() > 0)
                     ImPlot::SetupAxisTicks(ImAxis_X2, vel_ticks.data(), vel_ticks.size(), vel_labels.data());
@@ -1005,8 +1086,13 @@ namespace satdump
                 << " bins, threshold " << rfi_sigma << " sigma, local median over " << rfi_width_khz << " kHz)\n";
         else
             out << "# interference removal off\n";
-        out << "# v_kms = radial velocity from rf_hz, radio convention, rest frequency " << std::to_string(rest_mhz) << " MHz, observer frame (no LSR correction)\n";
-        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b,v_kms\n";
+        update_lsr();
+        out << "# v_kms = radial velocity from rf_hz, radio convention, rest frequency " << std::to_string(rest_mhz) << " MHz, observer frame\n";
+        if (lsr)
+            out << "# v_lsr_kms = v_kms + " << lsr_corr << " (LSR correction at save time: Earth rotation " << lsr_rot << ", Earth orbit " << lsr_orb << ", Sun " << lsr_sun
+                << "), source " << (lsr_frame == 1 ? "l=" + std::to_string(src_l) + " b=" + std::to_string(src_b) : "RA=" + std::to_string(src_ra_h) + "h Dec=" + std::to_string(src_dec))
+                << ", QTH " << qth_lat << " " << qth_lon << " " << qth_alt << " m\n";
+        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b,v_kms" << (lsr ? ",v_lsr_kms" : "") << "\n";
         out.precision(10);
         for (int j = 0; j < nbins; j++)
         {
@@ -1022,7 +1108,10 @@ namespace satdump
                 double q21 = ab > 0 ? (bb - ab) / ab : 0; // o2 - o1, reference A
                 out << 0.5 * (q12 + q21);
             }
-            out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6) << "\n";
+            out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6);
+            if (lsr)
+                out << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6) + lsr_corr;
+            out << "\n";
         }
         return path;
     }
