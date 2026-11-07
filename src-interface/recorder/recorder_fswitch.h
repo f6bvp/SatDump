@@ -81,6 +81,18 @@ namespace satdump
         // 20 km/s toward 18h03m50.3s +30d00m17s J2000): observer velocity
         // projected on the source = Earth rotation + Earth orbit + Sun.
         // Computed for the current time; agrees with astropy to 0.02 km/s
+        // Baseline: a polynomial (order bl_order) fitted to the folded
+        // spectrum outside the line window [bl_vmin, bl_vmax] (km/s, same
+        // frame as the velocity axis), then subtracted everywhere. Removes
+        // the slow ripple left by the parts of the receiver response that
+        // follow the RF frequency (antenna, filters, cables)
+        bool bl_remove = false;
+        int bl_order = 4;
+        float bl_vmin = -150.0f, bl_vmax = 150.0f;
+        double bl_rms = 0;  // residual outside the window (dP/Psys)
+        int bl_points = 0;
+        double mhz_of_velocity(double v) { return rest_mhz * (1 - (v - lsr_corr) / 299792.458); }
+
         bool lsr = false;
         int lsr_frame = 0;               // 0 = RA/Dec J2000, 1 = galactic l/b
         double src_ra_h = 0.712, src_dec = 41.269; // M31
@@ -258,6 +270,10 @@ namespace satdump
         // Unfolded: o1 - o2 = (A-B)/B and o2 - o1 = (B-A)/A, receiver axis
         std::vector<double> unf_x, unf_12, unf_21;
         void smooth_scale(const std::vector<double> &y, std::vector<double> &out);
+        // Fits and subtracts the baseline from y (x in MHz, NaN = hidden);
+        // the subtracted curve is kept in bl_curve
+        void remove_baseline(const std::vector<double> &x, std::vector<double> &y);
+        std::vector<double> bl_curve, folded_raw;
 
         // Interference flags of A and B (receiver axis), from the whole
         // averages, used for the result and the cycles file too

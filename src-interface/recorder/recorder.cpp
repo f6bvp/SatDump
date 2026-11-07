@@ -612,6 +612,17 @@ namespace satdump
                 }
                 ImGui::Unindent();
             }
+            ImGui::Checkbox(_("Remove baseline"), &fswitch.bl_remove);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", _("Fits a polynomial outside the line window (orange lines, draggable) and subtracts it,\nto flatten the slow ripple left by the receiver."));
+            if (fswitch.bl_remove)
+            {
+                ImGui::Indent();
+                ImGui::SliderInt(_("Order"), &fswitch.bl_order, 0, 9);
+                ImGui::InputFloat(_("Line from (km/s)"), &fswitch.bl_vmin, 10, 50, "%.0f");
+                ImGui::InputFloat(_("Line to (km/s)"), &fswitch.bl_vmax, 10, 50, "%.0f");
+                ImGui::Unindent();
+            }
             ImGui::Checkbox(_("Remove narrow interference"), &fswitch.rfi_remove);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", _("Spurs much narrower than the HI line (e.g. 1420.000 MHz) are removed from A and B before folding.\nThe raw averages are kept: untick to see them again."));

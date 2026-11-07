@@ -496,6 +496,12 @@ namespace satdump
             plot_x.push_back((f0 + ((double)j / nbins - 0.5) * samplerate) / 1e6);
             y.push_back((valid[j - dk] && valid[j + dk]) ? 0.5 * (q[j - dk] + q21[j + dk]) : nan);
         }
+        folded_raw = y;
+        bl_curve.clear();
+        bl_points = 0;
+        bl_rms = 0;
+        if (bl_remove)
+            remove_baseline(plot_x, y);
         smooth_scale(y, plot_y);
 
         // Unfolded, on the receiver axis (bin k shown at f0 + its offset)
@@ -623,6 +629,131 @@ namespace satdump
         rfi_fill(b, rfi_b);
     }
 
+    void FrequencySwitcher::remove_baseline(const std::vector<double> &x, std::vector<double> &y)
+    {
+        // Least squares with Legendre polynomials on x mapped to [-1, 1]
+        // (well conditioned), points of the line window left out, then two
+        // passes rejecting points beyond 3 sigma (residual spurs, noise peaks)
+        int n = y.size(), m = std::clamp(bl_order, 0, 9) + 1;
+        if (n < 2 * m)
+            return;
+        double x0 = x.front(), x1 = x.back();
+        double flo = mhz_of_velocity(bl_vmax), fhi = mhz_of_velocity(bl_vmin); // higher v = lower f
+        if (flo > fhi)
+            std::swap(flo, fhi);
+        std::vector<double> P(m);
+        auto basis = [&](double xv)
+        {
+            double t = 2 * (xv - x0) / (x1 - x0) - 1;
+            P[0] = 1;
+            if (m > 1)
+                P[1] = t;
+            for (int k = 2; k < m; k++)
+                P[k] = ((2 * k - 1) * t * P[k - 1] - (k - 1) * P[k - 2]) / k;
+        };
+        std::vector<char> use(n);
+        for (int i = 0; i < n; i++)
+            use[i] = !std::isnan(y[i]) && !(x[i] >= flo && x[i] <= fhi);
+        std::vector<double> coef(m, 0.0);
+        bool ok = false;
+        for (int pass = 0; pass < 3; pass++)
+        {
+            std::vector<double> A(m * m, 0.0), r(m, 0.0);
+            int cnt = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (!use[i])
+                    continue;
+                basis(x[i]);
+                for (int a = 0; a < m; a++)
+                {
+                    r[a] += P[a] * y[i];
+                    for (int b = 0; b < m; b++)
+                        A[a * m + b] += P[a] * P[b];
+                }
+                cnt++;
+            }
+            if (cnt < 2 * m)
+                break;
+            // Gaussian elimination with partial pivoting
+            ok = true;
+            for (int c = 0; c < m && ok; c++)
+            {
+                int pv = c;
+                for (int k = c + 1; k < m; k++)
+                    if (std::fabs(A[k * m + c]) > std::fabs(A[pv * m + c]))
+                        pv = k;
+                if (std::fabs(A[pv * m + c]) < 1e-300)
+                {
+                    ok = false;
+                    break;
+                }
+                if (pv != c)
+                {
+                    for (int k = 0; k < m; k++)
+                        std::swap(A[c * m + k], A[pv * m + k]);
+                    std::swap(r[c], r[pv]);
+                }
+                for (int k = c + 1; k < m; k++)
+                {
+                    double f = A[k * m + c] / A[c * m + c];
+                    for (int l = c; l < m; l++)
+                        A[k * m + l] -= f * A[c * m + l];
+                    r[k] -= f * r[c];
+                }
+            }
+            if (!ok)
+                break;
+            for (int c = m - 1; c >= 0; c--)
+            {
+                double v = r[c];
+                for (int k = c + 1; k < m; k++)
+                    v -= A[c * m + k] * coef[k];
+                coef[c] = v / A[c * m + c];
+            }
+            // Residual spread, then reject outliers for the next pass
+            double ss = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (!use[i])
+                    continue;
+                basis(x[i]);
+                double fit = 0;
+                for (int k = 0; k < m; k++)
+                    fit += coef[k] * P[k];
+                ss += (y[i] - fit) * (y[i] - fit);
+            }
+            bl_points = cnt;
+            bl_rms = std::sqrt(ss / cnt);
+            if (pass == 2)
+                break;
+            for (int i = 0; i < n; i++)
+            {
+                if (!use[i])
+                    continue;
+                basis(x[i]);
+                double fit = 0;
+                for (int k = 0; k < m; k++)
+                    fit += coef[k] * P[k];
+                if (std::fabs(y[i] - fit) > 3 * bl_rms)
+                    use[i] = 0;
+            }
+        }
+        if (!ok)
+            return;
+        bl_curve.assign(n, 0.0);
+        for (int i = 0; i < n; i++)
+        {
+            basis(x[i]);
+            double fit = 0;
+            for (int k = 0; k < m; k++)
+                fit += coef[k] * P[k];
+            bl_curve[i] = fit;
+            if (!std::isnan(y[i]))
+                y[i] -= fit;
+        }
+    }
+
     void FrequencySwitcher::smooth_scale(const std::vector<double> &y, std::vector<double> &out)
     {
         // Boxcar smoothing ignoring hidden bins (prefix sums), then display units
@@ -662,6 +793,8 @@ namespace satdump
         ImGui::Text("Offset : +/- %.1f kHz (%d bins)", delta_eff / 1e3, dk);
         ImGui::Text("Cycles : %llu (%.0f s on sky)", (unsigned long long)cycles, cycles * 2 * run_dwell);
         ImGui::Text("Frames : A %llu / B %llu", (unsigned long long)n_a, (unsigned long long)n_b);
+        if (bl_remove && bl_points > 0)
+            ImGui::Text("Baseline : order %d, rms %.3g x1e-3 outside the line (%d points)", bl_order, bl_rms * 1e3, bl_points);
         if (rfi_remove && (int)rfi_a.size() == nbins)
             ImGui::Text("Interference removed : A %d / B %d bins", rfi_count_a, rfi_count_b);
         if (resumed)
@@ -842,6 +975,18 @@ namespace satdump
             }
             if (plot_x.size() > 0)
                 ImPlot::PlotLine("folded", plot_x.data(), plot_y.data(), plot_x.size());
+            if (bl_remove && plot_x.size() > 1 && rest_mhz > 0)
+            {
+                // Line window, draggable: the baseline is fitted outside it
+                double fa = mhz_of_velocity(bl_vmin), fb = mhz_of_velocity(bl_vmax);
+                ImVec4 col(1.0f, 0.75f, 0.2f, 0.9f);
+                if (ImPlot::DragLineX(4201, &fa, col, 1.5f))
+                    bl_vmin = rest_mhz > 0 ? (1 - fa / rest_mhz) * 299792.458 + lsr_corr : bl_vmin;
+                if (ImPlot::DragLineX(4202, &fb, col, 1.5f))
+                    bl_vmax = rest_mhz > 0 ? (1 - fb / rest_mhz) * 299792.458 + lsr_corr : bl_vmax;
+                if (bl_vmin > bl_vmax)
+                    std::swap(bl_vmin, bl_vmax);
+            }
             if (ImPlot::IsPlotHovered())
             {
                 ImPlotPoint mp = ImPlot::GetPlotMousePos(ImAxis_X1, ImAxis_Y1);
@@ -1091,6 +1236,8 @@ namespace satdump
         out << "# cycles=" << cycles << " frames_a=" << n_a << " frames_b=" << n_b << "\n";
         out << "# A = mean linear power tuned at f0+offset, B = tuned at f0-offset, indexed by FFT bin\n";
         out << "# q = (A-B)/B ; folded(j) = ((A-B)/B (j-d) + (B-A)/A (j+d))/2, sky frequency rf_hz, empty near the edges\n";
+        compute(); // current baseline (bl_curve), indexed by j - dk
+        bool blc = bl_remove && (int)bl_curve.size() == nbins - 2 * dk;
         std::vector<double> ma, mb;
         mean_spectra(ma, mb);
         bool rfi = rfi_remove && (int)rfi_a.size() == nbins && (int)rfi_b.size() == nbins;
@@ -1105,7 +1252,10 @@ namespace satdump
             out << "# v_lsr_kms = v_kms + " << lsr_corr << " (LSR correction at save time: Earth rotation " << lsr_rot << ", Earth orbit " << lsr_orb << ", Sun " << lsr_sun
                 << "), source " << (lsr_frame == 1 ? "l=" + std::to_string(src_l) + " b=" + std::to_string(src_b) : "RA=" + std::to_string(src_ra_h) + "h Dec=" + std::to_string(src_dec))
                 << ", QTH " << qth_lat << " " << qth_lon << " " << qth_alt << " m\n";
-        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b,v_kms" << (lsr ? ",v_lsr_kms" : "") << "\n";
+        if (blc)
+            out << "# folded_bl = folded minus a Legendre polynomial of order " << bl_order << " fitted outside " << bl_vmin << " .. " << bl_vmax << " km/s"
+                << (lsr ? " (LSR)" : " (observer)") << ", residual rms " << bl_rms << " over " << bl_points << " points\n";
+        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b,v_kms" << (lsr ? ",v_lsr_kms" : "") << (blc ? ",folded_bl" : "") << "\n";
         out.precision(10);
         for (int j = 0; j < nbins; j++)
         {
@@ -1124,6 +1274,12 @@ namespace satdump
             out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6);
             if (lsr)
                 out << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6) + lsr_corr;
+            if (blc)
+            {
+                out << ",";
+                if (j >= dk && j < nbins - dk && !std::isnan(folded_raw[j - dk]))
+                    out << folded_raw[j - dk] - bl_curve[j - dk];
+            }
             out << "\n";
         }
         return path;
