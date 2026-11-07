@@ -14,18 +14,42 @@ namespace satdump
 {
     static double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
-    void FrequencySwitcher::init_run(double center_hz, double sr, int fft_size, const float *init_display)
+    int FrequencySwitcher::dk_for(double off_khz, double sr, int fft_size)
+    {
+        // Use an offset that is a whole number of FFT bins, so that
+        // the folding is exact
+        int d = std::max<int>(1, std::lround(off_khz * 1e3 * fft_size / sr));
+        if (d > fft_size / 2 - 1)
+            d = fft_size / 2 - 1;
+        return d;
+    }
+
+    bool FrequencySwitcher::compatible(double center_hz, double sr, int fft_size, int new_dk)
+    {
+        // mtx must be held
+        return n_a > 0 && n_b > 0 && center_hz == f0 && sr == samplerate && fft_size == nbins && new_dk == dk && (int)sum_a.size() == nbins && (int)sum_b.size() == nbins;
+    }
+
+    bool FrequencySwitcher::can_resume(double center_hz, double sr, int fft_size, double off_khz)
+    {
+        if (running || sr <= 0 || fft_size <= 0)
+            return false;
+        std::lock_guard<std::mutex> lk(mtx);
+        return compatible(center_hz, sr, fft_size, dk_for(off_khz, sr, fft_size));
+    }
+
+    bool FrequencySwitcher::init_run(double center_hz, double sr, int fft_size, const float *init_display, bool resume)
     {
         // mtx must be held. Common to local and server switching
+        int new_dk = dk_for(offset_khz, sr, fft_size);
+        bool keep = resume && compatible(center_hz, sr, fft_size, new_dk);
+        if (resume && !keep && (n_a > 0 || n_b > 0))
+            logger->warn("Frequency switching: frequency, samplerate, FFT size or offset changed, starting from zero");
+
         f0 = center_hz;
         samplerate = sr;
         nbins = fft_size;
-
-        // Use an offset that is a whole number of FFT bins, so that
-        // the folding is exact
-        dk = std::max<int>(1, std::lround(offset_khz * 1e3 * nbins / samplerate));
-        if (dk > nbins / 2 - 1)
-            dk = nbins / 2 - 1;
+        dk = new_dk;
         delta_eff = dk * samplerate / nbins;
 
         run_dwell = std::max(0.1f, dwell_s);
@@ -42,19 +66,27 @@ namespace satdump
         speed = 1;
         rate_hist.clear();
         speed_now = 1;
-        sum_a.assign(nbins, 0);
-        sum_b.assign(nbins, 0);
-        n_a = n_b = 0;
-        cycles = 0;
+        if (!keep)
+        {
+            sum_a.assign(nbins, 0);
+            sum_b.assign(nbins, 0);
+            n_a = n_b = 0;
+            cycles = 0;
+            plot_x.clear();
+            plot_y.clear();
+            unf_x.clear();
+            unf_12.clear();
+            unf_21.clear();
+        }
+        n_a_run0 = n_a;
+        n_b_run0 = n_b;
+        cycles_run0 = cycles;
+        resumed = keep;
+        // A cycle cut by the stop is not written: start a new one
         std::fill(cyc_a.begin(), cyc_a.end(), 0);
         std::fill(cyc_b.begin(), cyc_b.end(), 0);
         cyc_na = cyc_nb = 0;
         cyc_last_ph = -1;
-        plot_x.clear();
-        plot_y.clear();
-        unf_x.clear();
-        unf_12.clear();
-        unf_21.clear();
         disp.assign(nbins, -150.0f);
         // Keep showing the current spectrum until the first frames arrive
         if (init_display != nullptr)
@@ -64,44 +96,51 @@ namespace satdump
 
         close_cycles();
         if (save_cycles)
-            open_cycles();
+            open_cycles(keep && cyc_path.size() > 0);
+        else if (!keep)
+            cyc_path.clear();
 
         remote_status_seen = false;
         remote_iq_file.clear();
         remote_iq_error.clear();
         remote_iq_bytes = 0;
         remote_dwells = 0;
+        return keep;
     }
 
-    void FrequencySwitcher::start(double center_hz, double sr, int fft_size, double fdt, const float *init_display)
+    void FrequencySwitcher::start(double center_hz, double sr, int fft_size, double fdt, const float *init_display, bool resume)
     {
         stop();
 
+        bool kept;
         {
             std::lock_guard<std::mutex> lk(mtx);
             remote = false;
-            init_run(center_hz, sr, fft_size, init_display);
+            kept = init_run(center_hz, sr, fft_size, init_display, resume);
+            // The delay is measured again (it may have changed); the kept
+            // averages are not touched meanwhile
             calibrating = auto_delay;
             slot_len = std::max(fdt, 0.05);
             frame_dt = fdt;
         }
 
-        logger->info("Frequency switching: f0 %.0f Hz, offset +/- %.0f Hz (%d bins), dwell %.2f s, settle %.2f s", f0, delta_eff, dk, run_dwell, run_settle);
+        logger->info("Frequency switching%s: f0 %.0f Hz, offset +/- %.0f Hz (%d bins), dwell %.2f s, settle %.2f s", kept ? " resumed" : "", f0, delta_eff, dk, run_dwell, run_settle);
 
         running = true;
         thread = std::thread(&FrequencySwitcher::run, this);
     }
 
-    bool FrequencySwitcher::start_remote(double center_hz, double sr, int fft_size, const float *init_display)
+    bool FrequencySwitcher::start_remote(double center_hz, double sr, int fft_size, const float *init_display, bool resume)
     {
         stop();
 
         nlohmann::json st;
         uint64_t gen;
+        bool kept;
         {
             std::lock_guard<std::mutex> lk(mtx);
             remote = true; // before init_run: written in the cycles file header
-            init_run(center_hz, sr, fft_size, init_display);
+            kept = init_run(center_hz, sr, fft_size, init_display, resume);
             gen = ++remote_gen;
             // A = sky f0 + D, B = sky f0 - D, through the xconverter
             st["freq_a"] = sdr_freq_of(f0 + delta_eff);
@@ -146,7 +185,7 @@ namespace satdump
             return false;
         }
 
-        logger->info("Frequency switching on the server: f0 %.0f Hz, offset +/- %.0f Hz (%d bins), dwell %.2f s, settle %.2f s%s", f0, delta_eff, dk, run_dwell, run_settle,
+        logger->info("Frequency switching on the server%s: f0 %.0f Hz, offset +/- %.0f Hz (%d bins), dwell %.2f s, settle %.2f s%s", kept ? " resumed" : "", f0, delta_eff, dk, run_dwell, run_settle,
                      save_iq_on_server ? ", IQ saved on the server" : "");
         return true;
     }
@@ -172,7 +211,7 @@ namespace satdump
         {
             // Refused at start (or stopped by the server): switch locally
             // if it never started, else just stop
-            if (n_a == 0 && n_b == 0 && remote_dwells == 0)
+            if (n_a == n_a_run0 && n_b == n_b_run0 && remote_dwells == 0)
             {
                 fallback_why = err.size() ? err : "refused by the server";
                 fallback_requested = true;
@@ -270,6 +309,8 @@ namespace satdump
         std::fill(sum_b.begin(), sum_b.end(), 0);
         n_a = n_b = 0;
         cycles = 0;
+        n_a_run0 = n_b_run0 = cycles_run0 = 0;
+        resumed = false;
         plot_x.clear();
         plot_y.clear();
         unf_x.clear();
@@ -546,15 +587,15 @@ namespace satdump
         if (!ok)
         {
             logger->warn("Frequency switching: delay measurement failed, using %.2f s", run_delay);
+            cycles = cycles_run0;
             return;
         }
         measured_delay = d;
         delay_score_ratio = contrast;
         run_delay = d;
-        std::fill(sum_a.begin(), sum_a.end(), 0);
-        std::fill(sum_b.begin(), sum_b.end(), 0);
-        n_a = n_b = 0;
-        cycles = 0;
+        // Nothing was summed while measuring; only the cycle count moved.
+        // The averages kept from a resumed run stay as they are
+        cycles = cycles_run0;
         logger->info("Frequency switching: measured delay %.2f s (contrast %.1f)", measured_delay, delay_score_ratio);
     }
 
@@ -672,6 +713,8 @@ namespace satdump
         ImGui::Text("Offset : +/- %.1f kHz (%d bins)", delta_eff / 1e3, dk);
         ImGui::Text("Cycles : %llu (%.0f s on sky)", (unsigned long long)cycles, cycles * 2 * run_dwell);
         ImGui::Text("Frames : A %llu / B %llu", (unsigned long long)n_a, (unsigned long long)n_b);
+        if (resumed)
+            ImGui::TextDisabled("Resumed: %llu cycles kept from before", (unsigned long long)cycles_run0);
         if (cyc_path.size())
             ImGui::TextWrapped("Cycles saved : %llu in %s", (unsigned long long)cyc_count, cyc_path.c_str());
         if (cyc_error.size())
@@ -816,14 +859,24 @@ namespace satdump
         return ts;
     }
 
-    void FrequencySwitcher::open_cycles()
+    void FrequencySwitcher::open_cycles(bool append)
     {
         // mtx must be held, after init_run() set the run parameters
         cyc_a.assign(nbins, 0);
         cyc_b.assign(nbins, 0);
-        cyc_na = cyc_nb = cyc_count = 0;
+        cyc_na = cyc_nb = 0;
         cyc_last_ph = -1;
         cyc_error.clear();
+        if (append)
+        {
+            // Resumed run: same columns, the cycle numbers go on
+            cyc_file.open(cyc_path, std::ios::app);
+            if (cyc_file)
+                return;
+            cyc_file.clear();
+            logger->warn("Frequency switching: cannot reopen " + cyc_path + ", starting a new cycles file");
+        }
+        cyc_count = 0;
         cyc_path = cycles_dir + "/fswitch_cycles_" + std::to_string((uint64_t)std::llround(f0)) + "Hz_" + utc_now(true) + "Z.csv";
         cyc_file.open(cyc_path);
         if (!cyc_file)

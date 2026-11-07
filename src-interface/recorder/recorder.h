@@ -158,7 +158,8 @@ namespace satdump
         FrequencySwitcher fswitch;
         // Own FFT without averaging, so the display keeps its own settings
         std::shared_ptr<dsp::FFTPanBlock> fswitch_fft;
-        void start_fswitch(bool force_local = false);
+        // resume: continue the averages of the previous run if the settings allow it
+        void start_fswitch(bool force_local = false, bool resume = false);
         void stop_fswitch();
 
     private: // VFO Stuff

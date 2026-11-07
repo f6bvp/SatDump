@@ -423,7 +423,7 @@ namespace satdump
         }
     }
 
-    void RecorderApplication::start_fswitch(bool force_local)
+    void RecorderApplication::start_fswitch(bool force_local, bool resume)
     {
         if (!is_started || fswitch.is_running())
             return;
@@ -440,7 +440,7 @@ namespace satdump
         // so only without decimation
         if (!force_local && fswitch.on_server && current_decimation <= 1)
         {
-            if (fswitch.start_remote(frequency_hz, sr, fft_size, fft->output_stream->writeBuf))
+            if (fswitch.start_remote(frequency_hz, sr, fft_size, fft->output_stream->writeBuf, resume))
             {
                 fswitch.display_avg = fft->avg_num;
                 fft_plot->set_ptr(fswitch.display_buffer());
@@ -465,7 +465,7 @@ namespace satdump
         fswitch_fft->start();
         splitter->set_enabled("fswitch", true);
 
-        fswitch.start(frequency_hz, sr, fft_size, frame_dt, fft->output_stream->writeBuf);
+        fswitch.start(frequency_hz, sr, fft_size, frame_dt, fft->output_stream->writeBuf, resume);
         fswitch.display_avg = fft->avg_num;
         fft_plot->set_ptr(fswitch.display_buffer());
     }

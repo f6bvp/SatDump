@@ -524,6 +524,22 @@ namespace satdump
                     ImGui::BeginDisabled();
                 if (ImGui::Button(_("Start switching")))
                     start_fswitch();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", _("New run: the averages start from zero"));
+                // Continue the averages where Stop left them
+                uint64_t sr_now = get_samplerate();
+                double off_khz = fswitch.offset_pct / 100.0 * FrequencySwitcher::max_offset_hz(sr_now) / 1e3;
+                bool can_resume = fswitch.can_resume(frequency_hz, sr_now, fft_size, off_khz);
+                ImGui::SameLine();
+                if (!can_resume)
+                    ImGui::BeginDisabled();
+                if (ImGui::Button(_("Resume switching")))
+                    start_fswitch(false, true);
+                if (!can_resume)
+                    ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", can_resume ? _("Continue the averages where Stop left them")
+                                                       : _("Nothing to continue, or frequency, samplerate, FFT size or offset changed"));
                 if (!can_start)
                     ImGui::EndDisabled();
             }
@@ -880,7 +896,7 @@ namespace satdump
                 {
                     logger->warn("Frequency switching on the server not possible (%s): switching locally", why.c_str());
                     stop_fswitch();
-                    start_fswitch(true);
+                    start_fswitch(true, true); // keeps what a resumed run had
                 }
             }
             else

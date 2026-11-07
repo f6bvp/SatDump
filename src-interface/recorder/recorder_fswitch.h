@@ -109,9 +109,13 @@ namespace satdump
 
         // frame_dt: duration of signal used by one FFT frame (seconds)
         // init_display: spectrum shown when switching starts (dB, fft_size values), may be null
-        void start(double center_hz, double samplerate, int fft_size, double frame_dt, const float *init_display = nullptr);
+        // resume: keep the averages of the previous run (see can_resume)
+        void start(double center_hz, double samplerate, int fft_size, double frame_dt, const float *init_display = nullptr, bool resume = false);
         // Same, done by the server. False if the source cannot do it
-        bool start_remote(double center_hz, double samplerate, int fft_size, const float *init_display = nullptr);
+        bool start_remote(double center_hz, double samplerate, int fft_size, const float *init_display = nullptr, bool resume = false);
+        // True when stopped with averages that a new run with these settings
+        // can continue: same frequency, samplerate, FFT size and offset
+        bool can_resume(double center_hz, double samplerate, int fft_size, double offset_khz);
         void stop();
         bool is_remote() { return remote; }
         // True once when the server refused or did not answer: the recorder
@@ -159,7 +163,10 @@ namespace satdump
         uint64_t remote_dwells = 0;
         void on_remote_status(nlohmann::json st);
         void on_remote_dwell(int phase, int frames, uint64_t index, const float *mean, int n);
-        void init_run(double center_hz, double sr, int fft_size, const float *init_display);
+        // Returns true if the averages of the previous run were kept
+        bool init_run(double center_hz, double sr, int fft_size, const float *init_display, bool resume);
+        int dk_for(double offset_khz, double sr, int fft_size);
+        bool compatible(double center_hz, double sr, int fft_size, int new_dk);
 
         void run();
         void compute();
@@ -220,6 +227,9 @@ namespace satdump
         std::vector<double> lin_tmp;
         uint64_t n_a = 0, n_b = 0;
         uint64_t cycles = 0;
+        // Their values when this run started (0, or those of a resumed run)
+        uint64_t n_a_run0 = 0, n_b_run0 = 0, cycles_run0 = 0;
+        bool resumed = false;
 
         // Per cycle folding, saved to cyc_file
         std::ofstream cyc_file;
@@ -227,7 +237,8 @@ namespace satdump
         std::vector<double> cyc_a, cyc_b;
         uint64_t cyc_na = 0, cyc_nb = 0, cyc_count = 0;
         int cyc_last_ph = -1;
-        void open_cycles();
+        // append: continue the file of the resumed run
+        void open_cycles(bool append = false);
         void close_cycles();
         // Adds `weight` frames of linear power (mean) to the current cycle;
         // a new A after a B closes the previous cycle
