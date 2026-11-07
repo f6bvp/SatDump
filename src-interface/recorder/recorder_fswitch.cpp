@@ -698,6 +698,36 @@ namespace satdump
         }
     }
 
+    void FrequencySwitcher::velocity_ticks(double fmin, double fmax)
+    {
+        // Round velocity steps (1, 2 or 5 x 10^k km/s), about 8 ticks.
+        // Frequency f (MHz) <-> v = c (f_rest - f) / f_rest
+        const double c = 299792.458;
+        vel_ticks.clear();
+        vel_text.clear();
+        vel_labels.clear();
+        if (!(fmax > fmin) || !(rest_mhz > 0))
+            return;
+        double v1 = c * (rest_mhz - fmax) / rest_mhz, v2 = c * (rest_mhz - fmin) / rest_mhz;
+        double raw = (v2 - v1) / 8, p = std::pow(10.0, std::floor(std::log10(raw))), step = p;
+        for (double m : {1.0, 2.0, 5.0, 10.0})
+            if (m * p >= raw)
+            {
+                step = m * p;
+                break;
+            }
+        for (double v = std::ceil(v1 / step) * step; v <= v2 && vel_ticks.size() < 50; v += step)
+        {
+            double vv = std::fabs(v) < step * 1e-6 ? 0.0 : v;
+            vel_ticks.push_back(rest_mhz * (1 - vv / c));
+            char t[32];
+            snprintf(t, sizeof(t), step < 1 ? "%.1f" : "%.0f", vv);
+            vel_text.push_back(t);
+        }
+        for (auto &t : vel_text)
+            vel_labels.push_back(t.c_str());
+    }
+
     void FrequencySwitcher::plot_folded(ImVec2 size, bool main_area)
     {
         // mtx must be held
@@ -707,6 +737,26 @@ namespace satdump
             float lo = use_db ? y_min_db : y_min, hi = use_db ? y_max_db : y_max;
             if (!auto_y)
                 ImPlot::SetupAxisLimits(ImAxis_Y1, std::min(lo, hi), std::max(lo, hi) + 1e-6, ImPlotCond_Always);
+            if (show_velocity && plot_x.size() > 1)
+            {
+                // Same frequency range as the bottom axis (last frame), labelled in km/s
+                if (!(vel_lim[1] > vel_lim[0]))
+                {
+                    vel_lim[0] = plot_x.front();
+                    vel_lim[1] = plot_x.back();
+                }
+                velocity_ticks(vel_lim[0], vel_lim[1]);
+                ImPlot::SetupAxis(ImAxis_X2, "Radial velocity (km/s, observer)", ImPlotAxisFlags_Opposite | ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoMenus);
+                ImPlot::SetupAxisLimits(ImAxis_X2, vel_lim[0], vel_lim[1], ImPlotCond_Always);
+                if (vel_ticks.size() > 0)
+                    ImPlot::SetupAxisTicks(ImAxis_X2, vel_ticks.data(), vel_ticks.size(), vel_labels.data());
+            }
+            if (show_velocity && plot_x.size() > 1)
+            {
+                ImPlotRect r = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                vel_lim[0] = r.X.Min;
+                vel_lim[1] = r.X.Max;
+            }
             if (plot_x.size() > 0)
                 ImPlot::PlotLine("folded", plot_x.data(), plot_y.data(), plot_x.size());
             // In the main area, deselecting "folded" in the legend stops switching
@@ -955,7 +1005,8 @@ namespace satdump
                 << " bins, threshold " << rfi_sigma << " sigma, local median over " << rfi_width_khz << " kHz)\n";
         else
             out << "# interference removal off\n";
-        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b\n";
+        out << "# v_kms = radial velocity from rf_hz, radio convention, rest frequency " << std::to_string(rest_mhz) << " MHz, observer frame (no LSR correction)\n";
+        out << "bin,if_offset_hz,rf_hz,a_lin,b_lin,q,folded,rfi_a,rfi_b,v_kms\n";
         out.precision(10);
         for (int j = 0; j < nbins; j++)
         {
@@ -971,7 +1022,7 @@ namespace satdump
                 double q21 = ab > 0 ? (bb - ab) / ab : 0; // o2 - o1, reference A
                 out << 0.5 * (q12 + q21);
             }
-            out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "\n";
+            out << "," << (rfi ? (int)rfi_a[j] : 0) << "," << (rfi ? (int)rfi_b[j] : 0) << "," << 299792.458 * (rest_mhz * 1e6 - (f0 + off)) / (rest_mhz * 1e6) << "\n";
         }
         return path;
     }

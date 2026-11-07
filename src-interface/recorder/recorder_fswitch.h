@@ -71,6 +71,12 @@ namespace satdump
         // Bins more than this below the median level (band edges) are hidden
         float edge_db = 3.0f;
 
+        // Radial velocity scale above the folded plot, radio convention:
+        // v = c (f_rest - f) / f_rest, positive when the source recedes.
+        // Relative to the observer (no correction to the LSR)
+        bool show_velocity = true;
+        double rest_mhz = 1420.405752; // HI; OH: 1665.402, 1667.359
+
         // Narrow interference (spurs, e.g. the Airspy clock harmonic at
         // 1420.000 MHz): in the mean spectra A and B, bins standing above the
         // local median by more than rfi_sigma times the noise are replaced
@@ -250,6 +256,12 @@ namespace satdump
         std::atomic<bool> stop_requested{false};
         void compute_once();
         void plot_folded(ImVec2 size, bool main_area);
+        // Velocity axis: frequency range shown last frame, ticks and labels
+        double vel_lim[2] = {0, 0};
+        std::vector<double> vel_ticks;
+        std::vector<std::string> vel_text;
+        std::vector<const char *> vel_labels;
+        void velocity_ticks(double fmin_mhz, double fmax_mhz);
 
         // Main display spectrum (dB), on the sky frequency axis
         std::vector<float> disp;

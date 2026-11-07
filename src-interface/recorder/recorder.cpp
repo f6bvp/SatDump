@@ -580,6 +580,15 @@ namespace satdump
             if (fswitch.auto_y)
                 ImGui::EndDisabled();
             widgets::SteppedSliderFloat(_("Edge mask (dB)"), &fswitch.edge_db, 0.5, 20, 0.5);
+            ImGui::Checkbox(_("Velocity scale (km/s)"), &fswitch.show_velocity);
+            if (fswitch.show_velocity)
+            {
+                ImGui::Indent();
+                ImGui::InputDouble(_("Rest frequency (MHz)"), &fswitch.rest_mhz, 0, 0, "%.6f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", _("HI 1420.405752, OH 1665.402 / 1667.359. v = c (f_rest - f) / f_rest, positive = receding, relative to the observer"));
+                ImGui::Unindent();
+            }
             ImGui::Checkbox(_("Remove narrow interference"), &fswitch.rfi_remove);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", _("Spurs much narrower than the HI line (e.g. 1420.000 MHz) are removed from A and B before folding.\nThe raw averages are kept: untick to see them again."));
