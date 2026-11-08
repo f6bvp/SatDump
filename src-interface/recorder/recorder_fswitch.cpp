@@ -53,8 +53,9 @@ namespace satdump
         dk = new_dk;
         delta_eff = dk * samplerate / nbins;
 
-        run_dwell = std::max(0.1f, dwell_s);
-        run_settle = std::max(0.0f, settle_s);
+        // Same limits as the panel
+        run_dwell = std::clamp(dwell_s, DWELL_MIN_S, DWELL_MAX_S);
+        run_settle = std::clamp(settle_s, 0.0f, SETTLE_MAX_S);
 
         events.clear();
         n_frames = 0;

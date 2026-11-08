@@ -489,8 +489,15 @@ namespace satdump
                 widgets::SteppedSliderFloat(_("Offset (% of max)"), &fswitch.offset_pct, 5, 100, 1, fmt);
                 ImGui::TextDisabled("%s %.0f kHz", _("Max offset at this samplerate:"), max_khz);
             }
-            ImGui::InputFloat(_("Dwell (s)"), &fswitch.dwell_s, 0.1f, 1.0f, "%.2f");
-            ImGui::InputFloat(_("Settle (s)"), &fswitch.settle_s, 0.05f, 0.5f, "%.2f");
+            // Dwell: at least 0.1 s (one FFT at least, the server refuses less)
+            if (ImGui::InputFloat(_("Dwell (s)"), &fswitch.dwell_s, 0.1f, 1.0f, "%.2f"))
+                fswitch.dwell_s = std::clamp(fswitch.dwell_s, FrequencySwitcher::DWELL_MIN_S, FrequencySwitcher::DWELL_MAX_S);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", _("Time on each frequency, 0.1 to 10 s"));
+            if (ImGui::InputFloat(_("Settle (s)"), &fswitch.settle_s, 0.05f, 0.5f, "%.2f"))
+                fswitch.settle_s = std::clamp(fswitch.settle_s, 0.0f, FrequencySwitcher::SETTLE_MAX_S);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", _("Time ignored after each retune, 0 to 5 s"));
             // Remote SDR: the server switches by itself (exact timing, no IQ on
             // the network)
             if (source_is_remote())

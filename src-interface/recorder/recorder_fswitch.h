@@ -51,6 +51,7 @@ namespace satdump
         static double max_offset_hz(double samplerate) { return 0.3 * samplerate; }
         float dwell_s = 2.0f;
         float settle_s = 0.5f;
+        static constexpr float DWELL_MIN_S = 0.1f, DWELL_MAX_S = 10.0f, SETTLE_MAX_S = 5.0f;
 
         // One folded spectrum per cycle (A then B) written to a CSV file in
         // cycles_dir, for post-processing. Set before start
