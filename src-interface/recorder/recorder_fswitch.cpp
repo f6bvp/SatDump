@@ -994,21 +994,53 @@ namespace satdump
             if (ImPlot::IsPlotHovered())
             {
                 ImPlotPoint mp = ImPlot::GetPlotMousePos(ImAxis_X1, ImAxis_Y1);
-                // Snap to the highest point of the curve within 15 pixels of
-                // the mouse, so that a peak is read at its top
+                // Snap to the nearest peak: start from the point of the curve
+                // closest to the mouse, then climb, pixel column by pixel
+                // column, to the top of that peak. A small peak between two
+                // large ones is reached by pointing at it
                 if (plot_x.size() > 1 && plot_x.size() == plot_y.size())
                 {
+                    const int R = 60;  // climbing range, in pixels
+                    const int S = 15;  // start search range, in pixels
                     ImVec2 mpix = ImGui::GetMousePos();
-                    double xa = ImPlot::PixelsToPlot(ImVec2(mpix.x - 15, mpix.y), ImAxis_X1, ImAxis_Y1).x;
-                    double xb = ImPlot::PixelsToPlot(ImVec2(mpix.x + 15, mpix.y), ImAxis_X1, ImAxis_Y1).x;
-                    if (xa > xb)
-                        std::swap(xa, xb);
-                    size_t ia = std::lower_bound(plot_x.begin(), plot_x.end(), xa) - plot_x.begin();
-                    size_t ib = std::upper_bound(plot_x.begin(), plot_x.end(), xb) - plot_x.begin();
-                    size_t best = plot_x.size();
-                    for (size_t i = ia; i < ib; i++)
-                        if (!std::isnan(plot_y[i]) && (best == plot_x.size() || plot_y[i] > plot_y[best]))
-                            best = i;
+                    // Highest point in each pixel column around the mouse
+                    std::vector<long> col(2 * R + 1, -1);
+                    for (int c = 0; c <= 2 * R; c++)
+                    {
+                        double xa = ImPlot::PixelsToPlot(ImVec2(mpix.x + c - R - 0.5f, mpix.y), ImAxis_X1, ImAxis_Y1).x;
+                        double xb = ImPlot::PixelsToPlot(ImVec2(mpix.x + c - R + 0.5f, mpix.y), ImAxis_X1, ImAxis_Y1).x;
+                        if (xa > xb)
+                            std::swap(xa, xb);
+                        size_t ia = std::lower_bound(plot_x.begin(), plot_x.end(), xa) - plot_x.begin();
+                        size_t ib = std::upper_bound(plot_x.begin(), plot_x.end(), xb) - plot_x.begin();
+                        for (size_t i = ia; i < ib; i++)
+                            if (!std::isnan(plot_y[i]) && (col[c] < 0 || plot_y[i] > plot_y[col[c]]))
+                                col[c] = i;
+                    }
+                    // Start: the column whose point is nearest to the mouse
+                    int s = -1;
+                    float dbest = 0;
+                    for (int c = R - S; c <= R + S; c++)
+                    {
+                        if (col[c] < 0)
+                            continue;
+                        ImVec2 p = ImPlot::PlotToPixels(ImPlotPoint(plot_x[col[c]], plot_y[col[c]]), ImAxis_X1, ImAxis_Y1);
+                        float dd = (p.x - mpix.x) * (p.x - mpix.x) + (p.y - mpix.y) * (p.y - mpix.y);
+                        if (s < 0 || dd < dbest)
+                            s = c, dbest = dd;
+                    }
+                    // Climb while a column within 2 pixels is higher
+                    while (s >= 0)
+                    {
+                        int next = s;
+                        for (int c = std::max(0, s - 2); c <= std::min(2 * R, s + 2); c++)
+                            if (col[c] >= 0 && plot_y[col[c]] > plot_y[col[next]])
+                                next = c;
+                        if (next == s)
+                            break;
+                        s = next;
+                    }
+                    size_t best = s >= 0 ? (size_t)col[s] : plot_x.size();
                     if (best < plot_x.size())
                     {
                         mp = ImPlotPoint(plot_x[best], plot_y[best]);
