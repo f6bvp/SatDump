@@ -994,6 +994,28 @@ namespace satdump
             if (ImPlot::IsPlotHovered())
             {
                 ImPlotPoint mp = ImPlot::GetPlotMousePos(ImAxis_X1, ImAxis_Y1);
+                // Snap to the highest point of the curve within 15 pixels of
+                // the mouse, so that a peak is read at its top
+                if (plot_x.size() > 1 && plot_x.size() == plot_y.size())
+                {
+                    ImVec2 mpix = ImGui::GetMousePos();
+                    double xa = ImPlot::PixelsToPlot(ImVec2(mpix.x - 15, mpix.y), ImAxis_X1, ImAxis_Y1).x;
+                    double xb = ImPlot::PixelsToPlot(ImVec2(mpix.x + 15, mpix.y), ImAxis_X1, ImAxis_Y1).x;
+                    if (xa > xb)
+                        std::swap(xa, xb);
+                    size_t ia = std::lower_bound(plot_x.begin(), plot_x.end(), xa) - plot_x.begin();
+                    size_t ib = std::upper_bound(plot_x.begin(), plot_x.end(), xb) - plot_x.begin();
+                    size_t best = plot_x.size();
+                    for (size_t i = ia; i < ib; i++)
+                        if (!std::isnan(plot_y[i]) && (best == plot_x.size() || plot_y[i] > plot_y[best]))
+                            best = i;
+                    if (best < plot_x.size())
+                    {
+                        mp = ImPlotPoint(plot_x[best], plot_y[best]);
+                        ImVec2 p = ImPlot::PlotToPixels(mp, ImAxis_X1, ImAxis_Y1);
+                        ImPlot::GetPlotDrawList()->AddCircle(p, 5.0f, ImGui::GetColorU32(ImGuiCol_Text), 0, 1.5f);
+                    }
+                }
                 char txt[128];
                 int n = snprintf(txt, sizeof(txt), "%.1f MHz", mp.x);
                 if (show_velocity && rest_mhz > 0)
