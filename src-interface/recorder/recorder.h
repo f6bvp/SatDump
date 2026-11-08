@@ -216,6 +216,19 @@ namespace satdump
                 return current_samplerate;
         }
 
+        // Samplerate for settings shown before Start: current_samplerate is
+        // only read from the source at Start (1 MHz until then), while a
+        // remote source already knows the server samplerate
+        uint64_t get_display_samplerate()
+        {
+            if (is_started || !source_ptr)
+                return get_samplerate();
+            uint64_t sr = source_ptr->get_samplerate();
+            if (sr == 0)
+                return get_samplerate();
+            return current_decimation > 0 ? sr / current_decimation : sr;
+        }
+
         // SDR frequency for a sky frequency (xconverter), without tuning
         double sdr_freq_of(double freq_hz)
         {

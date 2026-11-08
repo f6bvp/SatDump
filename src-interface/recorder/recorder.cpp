@@ -483,7 +483,7 @@ namespace satdump
                 ImGui::BeginDisabled();
             {
                 // Offset in % of the largest one allowed, shown in kHz too
-                double max_khz = FrequencySwitcher::max_offset_hz(get_samplerate()) / 1e3;
+                double max_khz = FrequencySwitcher::max_offset_hz(get_display_samplerate()) / 1e3;
                 char fmt[64];
                 snprintf(fmt, sizeof(fmt), "%%.0f %%%% (%.0f kHz)", fswitch.offset_pct / 100.0 * max_khz);
                 widgets::SteppedSliderFloat(_("Offset (% of max)"), &fswitch.offset_pct, 5, 100, 1, fmt);
